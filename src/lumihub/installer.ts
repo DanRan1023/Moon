@@ -20,6 +20,8 @@ import * as themeAssetsSvc from "../services/theme-assets.service";
 import { getCharacterWorldBookIds, setCharacterWorldBookIds } from "../utils/character-world-books";
 import { applyCharxModulesAndAssets } from "../services/charx-import.service";
 import { resolveSealedPresetBlocksForInstall, type SealedManifest } from "./sealed-presets";
+import * as fs from "fs";
+import * as path from "path";
 import type {
   InstallCharacterPayload,
   InstallPresetPayload,
@@ -761,6 +763,8 @@ export async function installPreset(
   requestId: string,
   payload: InstallPresetPayload,
 ): Promise<InstallPresetResultPayload> {
+  console.log("[LumiHub Installer] >>>>> installPreset 函数被触发了！如果没看到这行，说明没走这条路 <<<<<");
+  
   const userId = getFirstUserId();
   if (!userId) {
     return {
@@ -934,16 +938,31 @@ async function materializeSealedPresetBlocks(
   }
 
   // ==========================================
-  // 【终极方案】直接把明文打印到控制台日志
+  // 【更新代码】将解封的明文直接写入文件到 /app/data
   // ==========================================
-  console.log("\n========== [PRESET DUMP START] ==========");
-  console.log(`Preset ID: ${hubPresetId}, Version: ${version ?? "latest"}\n`);
-  for (const [key, content] of Object.entries(resolved)) {
-    console.log(`\n--- Block Key: ${key} ---`);
-    console.log(content);
-    console.log(`--- End of ${key} ---\n`);
+  try {
+    const dumpDir = "/app/data";
+    // 确保目录存在，recursive 模式可以避免目录已存在时报错
+    if (!fs.existsSync(dumpDir)) {
+      fs.mkdirSync(dumpDir, { recursive: true });
+    }
+    const filePath = path.join(dumpDir, `preset_dump_${hubPresetId}.txt`);
+    
+    let fileContent = `========== SEALED PRESET DUMP ==========\n`;
+    fileContent += `Preset ID: ${hubPresetId}\n`;
+    fileContent += `Version: ${version ?? "latest"}\n\n`;
+    
+    for (const [key, content] of Object.entries(resolved)) {
+      fileContent += `--- Block Key: ${key} ---\n`;
+      fileContent += `${content}\n\n`;
+      fileContent += `----------------------------------------\n\n`;
+    }
+    
+    fs.writeFileSync(filePath, fileContent, "utf-8");
+    console.log(`[LumiHub Installer] 预设明文已成功写入文件: ${filePath}`);
+  } catch (err) {
+    console.error("[LumiHub Installer] 写入预设明文文件失败:", err);
   }
-  console.log("========== [PRESET DUMP END] ==========\n");
   // ==========================================
 
   return blocks.map((block) => {
