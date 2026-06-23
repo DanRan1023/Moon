@@ -11,17 +11,30 @@ export async function resolveSealedPresetBlock(
   presetMetadata: Record<string, any> | undefined,
   blockKey: string,
 ): Promise<string> {
-  if (!presetMetadata || !blockKey) return "";
+  console.log(`[LumiHub TRACE] resolveSealedPresetBlock 被调用, blockKey: ${blockKey}`);
+  console.log(`[LumiHub TRACE] 传入的 presetMetadata:`, JSON.stringify(presetMetadata, null, 2));
+
+  if (!presetMetadata || !blockKey) {
+    console.log("[LumiHub TRACE] 退出：缺少 metadata 或 blockKey");
+    return "";
+  }
   const hubPresetId = typeof presetMetadata._lumiverse_lumihub_id === "string"
     ? presetMetadata._lumiverse_lumihub_id
     : "";
   const manifest = isPlainObject(presetMetadata._lumiverse_sealed_preset)
     ? presetMetadata._lumiverse_sealed_preset as SealedManifest
     : null;
-  if (!hubPresetId || !manifest?.blocks?.length) return "";
+    
+  if (!hubPresetId || !manifest?.blocks?.length) {
+    console.log(`[LumiHub TRACE] 退出：hubPresetId (${hubPresetId}) 为空或 manifest 为空`);
+    return "";
+  }
 
   const expected = manifest.blocks.find((block) => block.key === blockKey)?.sha256;
-  if (!expected) return "";
+  if (!expected) {
+    console.log(`[LumiHub TRACE] 退出：在 manifest 中没找到 key 为 ${blockKey} 的哈希`);
+    return "";
+  }
 
   const version = typeof manifest.version === "string"
     ? manifest.version
@@ -31,19 +44,20 @@ export async function resolveSealedPresetBlock(
   const cacheKey = `${hubPresetId}:${version ?? ""}`;
   let pending = cache.get(cacheKey);
   if (!pending) {
-    console.log(`[LumiHub Debug] 触发拉取 sealed blocks, Preset ID: ${hubPresetId}, Version: ${version}`);
+    console.log(`[LumiHub TRACE] 触发拉取 sealed blocks, Preset ID: ${hubPresetId}, Version: ${version}`);
     pending = fetchSealedBlocks(hubPresetId, version, manifest);
     cache.set(cacheKey, pending);
   } else {
-    console.log(`[LumiHub Debug] 命中缓存，使用已存在的 Promise: ${cacheKey}`);
+    console.log(`[LumiHub TRACE] 命中缓存，使用已存在的 Promise: ${cacheKey}`);
   }
 
   try {
     const blocks = await pending;
+    console.log(`[LumiHub TRACE] 获取成功，返回 block 内容长度: ${blocks[blockKey]?.length || 0}`);
     return blocks[blockKey] || "";
   } catch (err) {
     cache.delete(cacheKey);
-    console.warn("[LumiHub] Failed to resolve sealed preset block:", err);
+    console.warn("[LumiHub TRACE] 获取失败:", err);
     return "";
   }
 }
@@ -53,7 +67,11 @@ export async function resolveSealedPresetBlocksForInstall(
   version: string | null,
   manifest: SealedManifest,
 ): Promise<Record<string, string>> {
-  if (!hubPresetId || !manifest.blocks?.length) return {};
+  console.log(`[LumiHub TRACE] resolveSealedPresetBlocksForInstall 被调用, ID: ${hubPresetId}`);
+  if (!hubPresetId || !manifest.blocks?.length) {
+    console.log("[LumiHub TRACE] install 退出：缺少参数");
+    return {};
+  }
   return fetchSealedBlocks(hubPresetId, version, manifest);
 }
 
@@ -62,14 +80,13 @@ async function fetchSealedBlocks(
   version: string | null,
   manifest: SealedManifest,
 ): Promise<Record<string, string>> {
-  console.log("[LumiHub Debug] 1. 进入 fetchSealedBlocks 函数...");
+  console.log("[LumiHub TRACE] fetchSealedBlocks 执行...");
   const config = await getLinkConfig();
   
   if (!config) {
-    console.error("[LumiHub Debug] 2. 失败：没有找到 LumiHub 配置或 Token，请先在前端绑定账号！");
+    console.error("[LumiHub TRACE] 失败：没有找到 LumiHub 配置或 Token！");
     return {};
   }
-  console.log("[LumiHub Debug] 2. 成功获取配置，Token 存在。准备发起网络请求...");
 
   const base = config.lumihubUrl.replace(/\/+$/, "");
   const url = new URL(`${base}/api/v1/presets/${encodeURIComponent(hubPresetId)}/sealed-blocks`);
@@ -81,16 +98,13 @@ async function fetchSealedBlocks(
     });
     
     if (!res.ok) {
-      console.error(`[LumiHub Debug] 3. 网络请求失败，服务器返回状态码: HTTP ${res.status}`);
+      console.error(`[LumiHub TRACE] 请求失败，HTTP ${res.status}`);
       throw new Error(`HTTP ${res.status}`);
     }
-    console.log("[LumiHub Debug] 3. 网络请求成功 (200 OK)，正在解析 JSON...");
 
     const json = await res.json() as { blocks?: Record<string, string> };
     const rawBlocks = isPlainObject(json.blocks) ? json.blocks : {};
     const out: Record<string, string> = {};
-
-    console.log(`[LumiHub Debug] 4. 收到 ${Object.keys(rawBlocks).length} 个原始 blocks，开始校验 Hash...`);
 
     for (const entry of manifest.blocks || []) {
       if (typeof entry.key !== "string" || typeof entry.sha256 !== "string") continue;
@@ -111,12 +125,12 @@ async function fetchSealedBlocks(
       }
       console.log("==============================================\n");
     } else {
-      console.warn("[LumiHub Debug] 5. 没有提取到任何内容，可能是 Hash 校验全部失败！");
+      console.warn("[LumiHub TRACE] 没有提取到任何内容！");
     }
 
     return out;
   } catch (error) {
-    console.error("[LumiHub Debug] fetchSealedBlocks 发生异常:", error);
+    console.error("[LumiHub TRACE] 异常:", error);
     throw error;
   }
 }
