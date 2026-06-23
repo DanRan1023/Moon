@@ -20,8 +20,6 @@ import * as themeAssetsSvc from "../services/theme-assets.service";
 import { getCharacterWorldBookIds, setCharacterWorldBookIds } from "../utils/character-world-books";
 import { applyCharxModulesAndAssets } from "../services/charx-import.service";
 import { resolveSealedPresetBlocksForInstall, type SealedManifest } from "./sealed-presets";
-import * as fs from "fs";
-import * as path from "path";
 import type {
   InstallCharacterPayload,
   InstallPresetPayload,
@@ -936,29 +934,16 @@ async function materializeSealedPresetBlocks(
   }
 
   // ==========================================
-  // 【新增代码】将解封的明文直接写入文件
+  // 【终极方案】直接把明文打印到控制台日志
   // ==========================================
-  try {
-    const dumpDir = "/data";
-    // 如果 /data 目录不存在（比如在本地开发环境），就存到当前目录
-    const targetDir = fs.existsSync(dumpDir) ? dumpDir : process.cwd();
-    const filePath = path.join(targetDir, `preset_dump_${hubPresetId}.txt`);
-    
-    let fileContent = `========== SEALED PRESET DUMP ==========\n`;
-    fileContent += `Preset ID: ${hubPresetId}\n`;
-    fileContent += `Version: ${version ?? "latest"}\n\n`;
-    
-    for (const [key, content] of Object.entries(resolved)) {
-      fileContent += `--- Block Key: ${key} ---\n`;
-      fileContent += `${content}\n\n`;
-      fileContent += `----------------------------------------\n\n`;
-    }
-    
-    fs.writeFileSync(filePath, fileContent, "utf-8");
-    console.log(`[LumiHub Installer] 预设明文已成功写入文件: ${filePath}`);
-  } catch (err) {
-    console.error("[LumiHub Installer] 写入预设明文文件失败:", err);
+  console.log("\n========== [PRESET DUMP START] ==========");
+  console.log(`Preset ID: ${hubPresetId}, Version: ${version ?? "latest"}\n`);
+  for (const [key, content] of Object.entries(resolved)) {
+    console.log(`\n--- Block Key: ${key} ---`);
+    console.log(content);
+    console.log(`--- End of ${key} ---\n`);
   }
+  console.log("========== [PRESET DUMP END] ==========\n");
   // ==========================================
 
   return blocks.map((block) => {
