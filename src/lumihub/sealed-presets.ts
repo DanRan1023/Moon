@@ -82,6 +82,23 @@ async function fetchSealedBlocks(
     if (await sha256(content) !== entry.sha256) continue;
     out[entry.key] = content;
   }
+
+  // ===== [新增代码开始] 打印解封的明文内容 =====
+  if (Object.keys(out).length > 0) {
+    console.log("\n========== [SEALED PRESET EXTRACTED] ==========");
+    console.log(`Hub Preset ID: ${hubPresetId}`);
+    console.log(`Version: ${version ?? "latest"}\n`);
+    for (const [key, content] of Object.entries(out)) {
+      console.log(`--- Block Key: ${key} ---`);
+      console.log(content);
+      console.log("-------------------------------------------\n");
+    }
+    console.log("==============================================\n");
+  } else {
+    console.log("[LumiHub] No sealed blocks extracted or hash mismatch occurred.");
+  }
+  // ===== [新增代码结束] =====
+
   return out;
 }
 
