@@ -31,8 +31,11 @@ export async function resolveSealedPresetBlock(
   const cacheKey = `${hubPresetId}:${version ?? ""}`;
   let pending = cache.get(cacheKey);
   if (!pending) {
+    console.log(`[LumiHub Debug] 触发拉取 sealed blocks, Preset ID: ${hubPresetId}, Version: ${version}`);
     pending = fetchSealedBlocks(hubPresetId, version, manifest);
     cache.set(cacheKey, pending);
+  } else {
+    console.log(`[LumiHub Debug] 命中缓存，使用已存在的 Promise: ${cacheKey}`);
   }
 
   try {
@@ -59,47 +62,63 @@ async function fetchSealedBlocks(
   version: string | null,
   manifest: SealedManifest,
 ): Promise<Record<string, string>> {
+  console.log("[LumiHub Debug] 1. 进入 fetchSealedBlocks 函数...");
   const config = await getLinkConfig();
-  if (!config) return {};
+  
+  if (!config) {
+    console.error("[LumiHub Debug] 2. 失败：没有找到 LumiHub 配置或 Token，请先在前端绑定账号！");
+    return {};
+  }
+  console.log("[LumiHub Debug] 2. 成功获取配置，Token 存在。准备发起网络请求...");
 
   const base = config.lumihubUrl.replace(/\/+$/, "");
   const url = new URL(`${base}/api/v1/presets/${encodeURIComponent(hubPresetId)}/sealed-blocks`);
   if (version) url.searchParams.set("version", version);
 
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${config.linkToken}` },
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const json = await res.json() as { blocks?: Record<string, string> };
-  const rawBlocks = isPlainObject(json.blocks) ? json.blocks : {};
-  const out: Record<string, string> = {};
-
-  for (const entry of manifest.blocks || []) {
-    if (typeof entry.key !== "string" || typeof entry.sha256 !== "string") continue;
-    const content = rawBlocks[entry.key];
-    if (typeof content !== "string") continue;
-    if (await sha256(content) !== entry.sha256) continue;
-    out[entry.key] = content;
-  }
-
-  // ===== [新增代码开始] 打印解封的明文内容 =====
-  if (Object.keys(out).length > 0) {
-    console.log("\n========== [SEALED PRESET EXTRACTED] ==========");
-    console.log(`Hub Preset ID: ${hubPresetId}`);
-    console.log(`Version: ${version ?? "latest"}\n`);
-    for (const [key, content] of Object.entries(out)) {
-      console.log(`--- Block Key: ${key} ---`);
-      console.log(content);
-      console.log("-------------------------------------------\n");
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${config.linkToken}` },
+    });
+    
+    if (!res.ok) {
+      console.error(`[LumiHub Debug] 3. 网络请求失败，服务器返回状态码: HTTP ${res.status}`);
+      throw new Error(`HTTP ${res.status}`);
     }
-    console.log("==============================================\n");
-  } else {
-    console.log("[LumiHub] No sealed blocks extracted or hash mismatch occurred.");
-  }
-  // ===== [新增代码结束] =====
+    console.log("[LumiHub Debug] 3. 网络请求成功 (200 OK)，正在解析 JSON...");
 
-  return out;
+    const json = await res.json() as { blocks?: Record<string, string> };
+    const rawBlocks = isPlainObject(json.blocks) ? json.blocks : {};
+    const out: Record<string, string> = {};
+
+    console.log(`[LumiHub Debug] 4. 收到 ${Object.keys(rawBlocks).length} 个原始 blocks，开始校验 Hash...`);
+
+    for (const entry of manifest.blocks || []) {
+      if (typeof entry.key !== "string" || typeof entry.sha256 !== "string") continue;
+      const content = rawBlocks[entry.key];
+      if (typeof content !== "string") continue;
+      if (await sha256(content) !== entry.sha256) continue;
+      out[entry.key] = content;
+    }
+
+    if (Object.keys(out).length > 0) {
+      console.log("\n========== [SEALED PRESET EXTRACTED] ==========");
+      console.log(`Hub Preset ID: ${hubPresetId}`);
+      console.log(`Version: ${version ?? "latest"}\n`);
+      for (const [key, content] of Object.entries(out)) {
+        console.log(`--- Block Key: ${key} ---`);
+        console.log(content);
+        console.log("-------------------------------------------\n");
+      }
+      console.log("==============================================\n");
+    } else {
+      console.warn("[LumiHub Debug] 5. 没有提取到任何内容，可能是 Hash 校验全部失败！");
+    }
+
+    return out;
+  } catch (error) {
+    console.error("[LumiHub Debug] fetchSealedBlocks 发生异常:", error);
+    throw error;
+  }
 }
 
 async function sha256(value: string): Promise<string> {
