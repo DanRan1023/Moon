@@ -1,0 +1,691 @@
+import type { StateCreator } from 'zustand'
+import type { AppStore, SettingsSlice, StartupSettings, ThemeConfig, ReasoningSettings } from '@/types/store'
+import { settingsApi } from '@/api/settings'
+import { themeAssetsApi } from '@/api/theme-assets'
+import { BASE_URL } from '@/api/client'
+import { generateUUID } from '@/lib/uuid'
+import { DEFAULT_THEME, normalizeTheme } from '@/theme/presets'
+
+/** Default reasoning settings — used as initial state and for restore-on-unbind. */
+export const REASONING_DEFAULTS: ReasoningSettings = {
+  prefix: '<think>\n',
+  suffix: '\n</think>',
+  autoParse: true,
+  apiReasoning: false,
+  reasoningEffort: 'auto',
+  keepInHistory: 0,
+  thinkingDisplay: 'auto',
+}
+
+/** Keys that represent persisted data (not functions) */
+const DATA_KEYS: ReadonlySet<string> = new Set([
+  'landingPageChatsDisplayed',
+  'landingPageLayoutMode',
+  'charactersPerPage',
+  'personasPerPage',
+  'messagesPerPage',
+  'chatSheldDisplayMode',
+  'bubbleUserAlign',
+  'bubbleDisableHover',
+  'bubbleHideAvatarBg',
+  'bubbleUseFullAvatar',
+  'bubbleOpacity',
+  'chatSheldEnterToSend',
+  'saveDraftInput',
+  'chatWidthMode',
+  'chatContentMaxWidth',
+  'modalWidthMode',
+  'modalMaxWidth',
+  'portraitPanelSide',
+  'theme',
+  'drawerSettings',
+  'oocEnabled',
+  'lumiaOOCStyle',
+  'lumiaOOCInterval',
+  'ircUseLeetHandles',
+  'chimeraMode',
+  'lumiaQuirks',
+  'lumiaQuirksEnabled',
+  'sovereignHand',
+  'contextFilters',
+  'activeProfileId',
+  'activePersonaId',
+  'activeLoomPresetId',
+  // Character browser preferences
+  'favorites',
+  'viewMode',
+  'sortField',
+  'sortDirection',
+  'filterTab',
+  // Persona browser preferences
+  'personaViewMode',
+  'personaSortField',
+  'personaSortDirection',
+  'personaFilterType',
+  // Character-persona bindings
+  'characterPersonaBindings',
+  'personaTagBindings',
+  // Pack browser preferences
+  'packFilterTab',
+  'packSortField',
+  // Active Lumia selections
+  'selectedDefinition',
+  'selectedChimeraDefinitions',
+  'selectedBehaviors',
+  'selectedPersonalities',
+  // Active Loom selections
+  'selectedLoomStyles',
+  'selectedLoomUtils',
+  'selectedLoomRetrofits',
+  // Global world books (always active regardless of character)
+  'globalWorldBooks',
+  // World info activation settings (budget, scan depth, recursion)
+  'worldInfoSettings',
+  'worldBookEntryViewPrefs',
+  'worldBookListSortDir',
+  // Image generation settings
+  'imageGeneration',
+  // Summarization settings
+  'summarization',
+  // Wallpaper settings
+  'wallpaper',
+  'useCharacterBackground',
+  // Reasoning / CoT settings
+  'reasoningSettings',
+  'promptBias',
+  'regenFeedback',
+  'swipeGesturesEnabled',
+  'showMessageTokenCount',
+  'messageContextMenuEnabled',
+  'guidedGenerations',
+  'quickReplySets',
+  'toastPosition',
+  // Expression display settings
+  'expressionDisplay',
+  'expressionDetection',
+  // Shared sidecar LLM settings
+  'sidecarSettings',
+  // Image optimization (thumbnail tier sizes)
+  'thumbnailSettings',
+  // Push notification preferences
+  'pushNotificationPreferences',
+  'customCSS',
+  'componentOverrides',
+  // Saved theme library (My Themes)
+  'savedThemes',
+  'chatHeadsEnabled',
+  'chatHeadsSize',
+  'chatHeadsDirection',
+  'chatHeadsOpacity',
+  'chatHeadsCompletionSoundEnabled',
+  'chatHeadsCustomCompletionSound',
+  'spindleSettings',
+  'voiceSettings',
+])
+
+// ── Debounced batch persistence ──────────────────────────────────────────
+// Dirty keys accumulate and flush as a single PUT after FLUSH_DELAY ms of
+// inactivity.  Also flushes on page unload so nothing is lost.
+const FLUSH_DELAY = 1_500
+const PENDING_SETTINGS_KEY = '__lumiverse_pending_settings'
+const dirtyKeys = new Map<string, any>()
+let flushTimer: ReturnType<typeof setTimeout> | null = null
+let flushInFlight = false
+let activeFlushPromise: Promise<void> | null = null
+
+function persistBatch(batch: Record<string, any>): Promise<void> {
+  flushInFlight = true
+
+  const request = settingsApi.putMany(batch).then(() => {
+    // Flush succeeded — clear localStorage bridge since DB is now up to date
+    try { localStorage.removeItem(PENDING_SETTINGS_KEY) } catch {}
+  }).catch((err) => {
+    console.error('[settings] Batch persist failed, re-queuing:', err)
+    // Re-queue failed keys so the next flush retries them
+    for (const [k, v] of Object.entries(batch)) {
+      if (!dirtyKeys.has(k)) dirtyKeys.set(k, v)
+    }
+    scheduleFlush()
+    throw err
+  }).finally(() => {
+    flushInFlight = false
+    if (activeFlushPromise === request) activeFlushPromise = null
+  })
+
+  activeFlushPromise = request
+  return request
+}
+
+function flushDirtyKeys() {
+  flushTimer = null
+  void flushSettingsNow().catch(() => {})
+}
+
+function scheduleFlush() {
+  if (flushTimer !== null) clearTimeout(flushTimer)
+  flushTimer = setTimeout(flushDirtyKeys, FLUSH_DELAY)
+}
+
+export function persistKey(key: string, value: any) {
+  dirtyKeys.set(key, value)
+  scheduleFlush()
+}
+
+/**
+ * Merge a setting value loaded from storage against the current in-memory
+ * default. Recursive so nested keys the stored row is missing (or explicitly
+ * null'd) fall back to the default — prevents panels from crashing on
+ * `contextFilters.htmlTags.enabled`-style reads when a row was written before
+ * a field existed. Arrays and primitives replace the default wholesale.
+ */
+function isPlainObject(v: any): v is Record<string, any> {
+  return v != null && typeof v === 'object' && !Array.isArray(v)
+}
+
+function mergeStoredSetting(defaultValue: any, storedValue: any): any {
+  if (!isPlainObject(defaultValue)) return storedValue
+  if (!isPlainObject(storedValue)) return defaultValue
+  const merged: Record<string, any> = { ...defaultValue }
+  for (const key of Object.keys(storedValue)) {
+    merged[key] = mergeStoredSetting(defaultValue[key], storedValue[key])
+  }
+  return merged
+}
+
+/** Immediately flush any pending settings (e.g. on page unload). */
+export function flushSettings() {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+  if (dirtyKeys.size === 0) return
+
+  const batch = Object.fromEntries(dirtyKeys)
+  dirtyKeys.clear()
+
+  // Write to localStorage synchronously as a bridge for the next page load.
+  // The keepalive fetch below races with the new page's loadSettings() — if
+  // GET /settings resolves before the PUT lands, the new page gets stale data.
+  // localStorage survives across page loads and is read synchronously by
+  // loadSettings() to recover any values the keepalive flush hasn't persisted yet.
+  try {
+    localStorage.setItem(PENDING_SETTINGS_KEY, JSON.stringify(batch))
+  } catch {}
+
+  // keepalive fetch survives page unload and supports PUT (unlike sendBeacon)
+  fetch(`${BASE_URL}/settings`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
+    body: JSON.stringify(batch),
+    keepalive: true,
+  }).catch(() => {})
+}
+
+/** Immediately persist all dirty settings and wait for the server commit. */
+export function flushSettingsNow(): Promise<void> {
+  if (flushTimer !== null) {
+    clearTimeout(flushTimer)
+    flushTimer = null
+  }
+
+  if (dirtyKeys.size === 0) {
+    return activeFlushPromise ?? Promise.resolve()
+  }
+
+  const batch = Object.fromEntries(dirtyKeys)
+  dirtyKeys.clear()
+  return persistBatch(batch)
+}
+
+/** True when a flush is in flight or dirty keys are pending. */
+export function hasUnsavedSettings(): boolean {
+  return dirtyKeys.size > 0 || flushInFlight || activeFlushPromise !== null
+}
+
+/** Remove a key from the pending dirty-keys map so the next flush won't overwrite a direct PUT. */
+export function clearDirtyKey(key: string): void {
+  dirtyKeys.delete(key)
+}
+
+// Flush on page unload so slider drags / rapid changes are never lost
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', flushSettings)
+}
+
+export const createSettingsSlice: StateCreator<AppStore, [], [], SettingsSlice> = (set, get) => ({
+  settingsLoaded: false,
+  landingPageChatsDisplayed: 12,
+  landingPageLayoutMode: 'cards',
+  charactersPerPage: 50,
+  personasPerPage: 24,
+  messagesPerPage: 50,
+  chatSheldDisplayMode: 'minimal',
+  bubbleUserAlign: 'right',
+  bubbleDisableHover: false,
+  bubbleHideAvatarBg: false,
+  bubbleUseFullAvatar: false,
+  bubbleOpacity: 1,
+  chatSheldEnterToSend: true,
+  saveDraftInput: false,
+  chatWidthMode: 'full',
+  chatContentMaxWidth: 900,
+  modalWidthMode: 'full',
+  modalMaxWidth: 900,
+  portraitPanelSide: 'right',
+  theme: null,
+  characterThemeOverlay: null,
+  drawerSettings: {
+    side: 'right',
+    verticalPosition: 15,
+    tabSize: 'large',
+    panelWidthMode: 'default',
+    customPanelWidth: 35,
+    showTabLabels: true,
+    hiddenTabIds: [],
+    tabOrder: [],
+  },
+  oocEnabled: true,
+  lumiaOOCStyle: 'social',
+  lumiaOOCInterval: null,
+  ircUseLeetHandles: true,
+  chimeraMode: false,
+  lumiaQuirks: '',
+  lumiaQuirksEnabled: true,
+  sovereignHand: {
+    enabled: false,
+    excludeLastMessage: true,
+    includeMessageInPrompt: true,
+  },
+  contextFilters: {
+    htmlTags: { enabled: false, keepDepth: 3, stripFonts: false, fontKeepDepth: 3 },
+    detailsBlocks: { enabled: false, keepDepth: 3, keepOnly: false },
+    loomItems: { enabled: false, keepDepth: 5, keepOnly: false },
+  },
+  reasoningSettings: { ...REASONING_DEFAULTS },
+  regenFeedback: {
+    enabled: false,
+    position: 'user',
+  },
+  swipeGesturesEnabled: true,
+  showMessageTokenCount: true,
+  messageContextMenuEnabled: true,
+  globalWorldBooks: [],
+  worldInfoSettings: {
+    globalScanDepth: null,
+    maxRecursionPasses: 3,
+    maxActivatedEntries: 0,
+    maxTokenBudget: 0,
+    minPriority: 0,
+  },
+  worldBookEntryViewPrefs: {},
+  worldBookListSortDir: 'asc',
+  promptBias: '',
+  guidedGenerations: [],
+  quickReplySets: [],
+  toastPosition: 'bottom-right',
+  wallpaper: {
+    global: null,
+    opacity: 0.3,
+    fit: 'cover',
+    blur: 0,
+  },
+  useCharacterBackground: false,
+
+  thumbnailSettings: { smallSize: 300, largeSize: 700 },
+  pushNotificationPreferences: { enabled: true, events: { generation_ended: true, generation_error: false } },
+  chatHeadsEnabled: true,
+  chatHeadsSize: 48,
+  chatHeadsDirection: 'column' as const,
+  chatHeadsOpacity: 1,
+  chatHeadsCompletionSoundEnabled: true,
+  chatHeadsCustomCompletionSound: null,
+  customCSS: { css: '', enabled: false, revision: 0, bundleId: null },
+  componentOverrides: {},
+  savedThemes: [],
+  spindleSettings: {
+    interceptorTimeoutMs: 10_000,
+    dockPanelDesktopSide: 'right',
+  },
+  voiceSettings: {
+    sttProvider: 'webspeech' as const,
+    sttLanguage: 'en-US',
+    sttContinuous: false,
+    sttInterimResults: true,
+    sttAutoSubmitOnSilence: false,
+    sttShowMicButton: true,
+    sttConnectionId: null,
+    ttsEnabled: false,
+    ttsConnectionId: null,
+    ttsAutoPlay: false,
+    ttsSpeed: 1.0,
+    ttsVolume: 0.8,
+    speechDetectionRules: {
+      asterisked: 'skip' as const,
+      quoted: 'speech' as const,
+      undecorated: 'narration' as const,
+    },
+    narrationVoice: null,
+  },
+
+  hydrateStartupSettings: (settings: StartupSettings) => {
+    const patch: Record<string, any> = { settingsLoaded: true }
+
+    if (Array.isArray(settings.favorites)) patch.favorites = settings.favorites
+    if (settings.filterTab) patch.filterTab = settings.filterTab
+    if (settings.sortField) patch.sortField = settings.sortField
+    if (settings.sortDirection) patch.sortDirection = settings.sortDirection
+    if (settings.viewMode) patch.viewMode = settings.viewMode
+    if (typeof settings.charactersPerPage === 'number') patch.charactersPerPage = settings.charactersPerPage
+    if ('theme' in settings) patch.theme = normalizeTheme(settings.theme)
+    if (typeof settings.landingPageChatsDisplayed === 'number' && Number.isFinite(settings.landingPageChatsDisplayed)) {
+      patch.landingPageChatsDisplayed = settings.landingPageChatsDisplayed
+    }
+    if (settings.landingPageLayoutMode === 'cards' || settings.landingPageLayoutMode === 'compact') {
+      patch.landingPageLayoutMode = settings.landingPageLayoutMode
+    }
+    if (settings.wallpaper && typeof settings.wallpaper === 'object') {
+      patch.wallpaper = { ...settings.wallpaper }
+    }
+    if (settings.drawerSettings && typeof settings.drawerSettings === 'object') {
+      patch.drawerSettings = { ...get().drawerSettings, ...settings.drawerSettings }
+    }
+
+    set(patch as any)
+  },
+
+  setVoiceSettings: (partial) =>
+    set((state) => {
+      const voiceSettings = { ...state.voiceSettings, ...partial }
+      if (partial.sttProvider === 'webspeech') {
+        voiceSettings.sttConnectionId = null
+      }
+      if (partial.speechDetectionRules) {
+        voiceSettings.speechDetectionRules = { ...state.voiceSettings.speechDetectionRules, ...partial.speechDetectionRules }
+      }
+      persistKey('voiceSettings', voiceSettings)
+      return { voiceSettings }
+    }),
+
+  setWallpaper: (partial) =>
+    set((state) => {
+      const wallpaper = { ...state.wallpaper, ...partial }
+      persistKey('wallpaper', wallpaper)
+      return { wallpaper }
+    }),
+
+  setSetting: (key, value) => {
+    set({ [key]: value } as any)
+    if (DATA_KEYS.has(key as string)) {
+      persistKey(key as string, value)
+    }
+  },
+
+  setTheme: (theme) => {
+    // Normalize every write so a partial/legacy theme (e.g. from an applied
+    // saved-theme snapshot) can never land in the store without an accent.
+    const next = theme == null ? null : normalizeTheme(theme)
+    set({ theme: next })
+    persistKey('theme', next)
+  },
+
+  setCharacterThemeOverlay: (characterThemeOverlay) => {
+    set({ characterThemeOverlay })
+  },
+
+  setCustomCSS: (css) =>
+    set((state) => {
+      const customCSS = { ...state.customCSS, css, revision: state.customCSS.revision + 1 }
+      persistKey('customCSS', customCSS)
+      return { customCSS }
+    }),
+
+  ensureThemeBundleId: () => {
+    const current = get().customCSS.bundleId
+    if (current) return current
+    const bundleId = generateUUID()
+    const customCSS = { ...get().customCSS, bundleId }
+    set({ customCSS })
+    persistKey('customCSS', customCSS)
+    return bundleId
+  },
+
+  toggleCustomCSS: (enabled) =>
+    set((state) => {
+      const customCSS = { ...state.customCSS, enabled }
+      persistKey('customCSS', customCSS)
+      return { customCSS }
+    }),
+
+  setComponentCSS: (componentName, css) =>
+    set((state) => {
+      const prev = state.componentOverrides[componentName]
+      const componentOverrides = {
+        ...state.componentOverrides,
+        [componentName]: { css, tsx: prev?.tsx ?? '', enabled: prev?.enabled ?? true },
+      }
+      persistKey('componentOverrides', componentOverrides)
+      return { componentOverrides }
+    }),
+
+  setComponentTSX: (componentName, tsx) =>
+    set((state) => {
+      const prev = state.componentOverrides[componentName]
+      const componentOverrides = {
+        ...state.componentOverrides,
+        [componentName]: { tsx, css: prev?.css ?? '', enabled: prev?.enabled ?? true },
+      }
+      persistKey('componentOverrides', componentOverrides)
+      return { componentOverrides }
+    }),
+
+  toggleComponentOverride: (componentName, enabled) =>
+    set((state) => {
+      const existing = state.componentOverrides[componentName]
+      if (!existing) return {}
+      const componentOverrides = {
+        ...state.componentOverrides,
+        [componentName]: { ...existing, enabled },
+      }
+      persistKey('componentOverrides', componentOverrides)
+      return { componentOverrides }
+    }),
+
+  resetAllOverrides: () => {
+    const componentOverrides = {}
+    const customCSS = { ...get().customCSS, css: '', enabled: false, revision: 0 }
+    persistKey('componentOverrides', componentOverrides)
+    persistKey('customCSS', customCSS)
+    set({ componentOverrides, customCSS })
+  },
+
+  applyThemePack: (pack) => {
+    const patch: Record<string, any> = {}
+
+    // Layer 1: Theme config — normalize so an imported pack whose theme lost
+    // its accent can't crash the app on the next load.
+    const packTheme = normalizeTheme(pack.theme)
+    if (packTheme) {
+      patch.theme = packTheme
+      persistKey('theme', packTheme)
+    }
+
+    // Layer 2: Global CSS
+    const customCSS = {
+      css: pack.globalCSS || '',
+      enabled: !!pack.globalCSS.trim(),
+      revision: Date.now(),
+      bundleId: pack.bundleId || generateUUID(),
+    }
+    patch.customCSS = customCSS
+    persistKey('customCSS', customCSS)
+
+    // Layer 3: Component overrides
+    const componentOverrides: Record<string, any> = {}
+    for (const [name, comp] of Object.entries(pack.components)) {
+      componentOverrides[name] = { css: comp.css || '', tsx: comp.tsx || '', enabled: comp.enabled }
+    }
+    patch.componentOverrides = componentOverrides
+    persistKey('componentOverrides', componentOverrides)
+
+    set(patch as any)
+  },
+
+  addSavedTheme: (input) => {
+    const entry = {
+      ...input,
+      id: generateUUID(),
+      createdAt: Math.floor(Date.now() / 1000),
+    } as import('@/types/store').SavedTheme
+    const savedThemes = [...get().savedThemes, entry]
+    set({ savedThemes })
+    persistKey('savedThemes', savedThemes)
+    return entry
+  },
+
+  renameSavedTheme: (id, name) => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const savedThemes = get().savedThemes.map((entry) =>
+      entry.id === id ? { ...entry, name: trimmed.slice(0, 200) } : entry
+    )
+    set({ savedThemes })
+    persistKey('savedThemes', savedThemes)
+  },
+
+  deleteSavedTheme: async (id) => {
+    const entry = get().savedThemes.find((e) => e.id === id)
+    if (!entry) return
+    const savedThemes = get().savedThemes.filter((e) => e.id !== id)
+    set({ savedThemes })
+    persistKey('savedThemes', savedThemes)
+    // Clean up bundle assets for pack entries, unless the bundle is still the
+    // active customCSS bundle (i.e. the user is currently using it).
+    if (entry.kind === 'pack') {
+      const activeBundleId = get().customCSS.bundleId
+      const packBundleId = entry.pack.bundleId
+      if (packBundleId && packBundleId !== activeBundleId) {
+        try {
+          const assets = await themeAssetsApi.list(packBundleId)
+          await Promise.all(assets.map((a) => themeAssetsApi.delete(a.id).catch(() => {})))
+        } catch {
+          // Swallow — orphaned assets are non-fatal; the user can prune manually.
+        }
+      }
+    }
+  },
+
+  applySavedTheme: (id) => {
+    const entry = get().savedThemes.find((e) => e.id === id)
+    if (!entry) return
+    if (entry.kind === 'config') {
+      get().setTheme(entry.theme)
+    } else {
+      get().applyThemePack(entry.pack)
+    }
+  },
+
+  updateSavedTheme: (id) => {
+    const currentTheme = get().theme ?? DEFAULT_THEME
+    const savedThemes = get().savedThemes.map((entry) => {
+      if (entry.id !== id) return entry
+      if (entry.kind === 'config') {
+        return { ...entry, theme: currentTheme } as typeof entry
+      }
+      return {
+        ...entry,
+        pack: { ...entry.pack, theme: currentTheme },
+      } as typeof entry
+    })
+    set({ savedThemes })
+    persistKey('savedThemes', savedThemes)
+  },
+
+  loadSettings: async () => {
+    try {
+      const rows = await settingsApi.getAll()
+      const patch: Record<string, any> = {}
+      const defaults = get()
+      let migratedCharacterFilterTab = false
+      // Retroactive purge: `activeLumiPresetId` was a defunct preset pointer
+      // that still ghost-drove generation for users with a stale value. It has
+      // no UI setter; wipe it from the DB on load so it stops resolving to a
+      // preset behind the user's back.
+      if (rows.some((r) => r.key === 'activeLumiPresetId')) {
+        settingsApi.delete('activeLumiPresetId').catch(() => {})
+      }
+      for (const row of rows) {
+        if (!DATA_KEYS.has(row.key)) continue
+        patch[row.key] = mergeStoredSetting((defaults as any)[row.key], row.value)
+      }
+
+      // Recover any settings the previous page wrote to localStorage but may
+      // not have persisted to the DB yet (keepalive flush races with this GET).
+      let pendingKeys: Record<string, any> | null = null
+      try {
+        const raw = localStorage.getItem(PENDING_SETTINGS_KEY)
+        if (raw) {
+          pendingKeys = JSON.parse(raw)
+          if (pendingKeys) {
+            for (const [k, v] of Object.entries(pendingKeys)) {
+              if (!DATA_KEYS.has(k)) continue
+              patch[k] = mergeStoredSetting((defaults as any)[k], v)
+            }
+          }
+        }
+      } catch {}
+
+      // Migration: discard old ThemeConfig shape (has baseColors but no accent)
+      if (patch.theme && 'baseColors' in patch.theme && !('accent' in patch.theme)) {
+        patch.theme = null
+      }
+      // Backfill any surviving non-null theme against DEFAULT_THEME so a missing
+      // `accent` (partial write, imported pack, hand-edited value) can't throw in
+      // generateThemeVariables / ThemePanel and white-screen the app on load.
+      if (patch.theme) {
+        patch.theme = normalizeTheme(patch.theme)
+      }
+      if (patch.filterTab === 'all') {
+        patch.filterTab = 'characters'
+        migratedCharacterFilterTab = true
+      }
+      if (pendingKeys?.filterTab === 'all') {
+        pendingKeys.filterTab = 'characters'
+        migratedCharacterFilterTab = true
+      }
+
+      if (patch.imageGeneration) {
+        const profiles = get().imageGenProfiles
+        const savedConnectionId = patch.imageGeneration.activeImageGenConnectionId ?? null
+        const activeImageGenConnectionId = savedConnectionId && profiles.some((profile) => profile.id === savedConnectionId)
+          ? savedConnectionId
+          : profiles.find((profile) => profile.is_default)?.id ?? null
+        patch.activeImageGenConnectionId = activeImageGenConnectionId
+        if (activeImageGenConnectionId !== savedConnectionId) {
+          patch.imageGeneration = { ...patch.imageGeneration, activeImageGenConnectionId }
+          settingsApi.put('imageGeneration', patch.imageGeneration).catch(() => {})
+        }
+      }
+      if (Object.keys(patch).length > 0) {
+        set(patch as any)
+      }
+      if (migratedCharacterFilterTab) {
+        settingsApi.put('filterTab', 'characters').catch(() => {})
+      }
+
+      // Flush recovered pending keys to the DB so subsequent loads are correct,
+      // then clear localStorage since the DB is now authoritative.
+      if (pendingKeys && Object.keys(pendingKeys).length > 0) {
+        settingsApi.putMany(pendingKeys)
+          .then(() => {
+            try { localStorage.removeItem(PENDING_SETTINGS_KEY) } catch {}
+          })
+          .catch(() => {})
+      }
+    } catch (err) {
+      console.error('[settings] Failed to load settings:', err)
+    } finally {
+      set({ settingsLoaded: true })
+    }
+  },
+})

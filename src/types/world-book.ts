@@ -1,0 +1,342 @@
+export interface WorldBook {
+  id: string;
+  name: string;
+  description: string;
+  folder: string;
+  metadata: Record<string, any>;
+  created_at: number;
+  updated_at: number;
+}
+
+export type WorldBookVectorIndexStatus = "not_enabled" | "pending" | "indexed" | "error";
+
+export interface WorldBookEntry {
+  id: string;
+  world_book_id: string;
+  uid: string;
+  outlet_name: string | null;
+  key: string[];
+  keysecondary: string[];
+  content: string;
+  comment: string;
+  position: number;
+  depth: number;
+  role: string | null;
+  order_value: number;
+  selective: boolean;
+  constant: boolean;
+  disabled: boolean;
+  group_name: string;
+  group_override: boolean;
+  group_weight: number;
+  probability: number;
+  scan_depth: number | null;
+  case_sensitive: boolean;
+  match_whole_words: boolean;
+  automation_id: string | null;
+  use_regex: boolean;
+  prevent_recursion: boolean;
+  exclude_recursion: boolean;
+  delay_until_recursion: boolean;
+  priority: number;
+  sticky: number;
+  cooldown: number;
+  delay: number;
+  selective_logic: number;
+  use_probability: boolean;
+  vectorized: boolean;
+  vector_index_status: WorldBookVectorIndexStatus;
+  vector_indexed_at: number | null;
+  vector_index_error: string | null;
+  extensions: Record<string, any>;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface WorldBookVectorSummary {
+  total: number;
+  enabled: number;
+  non_empty: number;
+  enabled_non_empty: number;
+  not_enabled: number;
+  pending: number;
+  indexed: number;
+  error: number;
+}
+
+export interface WorldBookReindexProgress {
+  total: number;
+  current: number;
+  eligible: number;
+  indexed: number;
+  removed: number;
+  skipped_not_enabled: number;
+  skipped_disabled_or_empty: number;
+  failed: number;
+}
+
+export interface WorldBookReindexResult extends WorldBookReindexProgress {}
+
+export interface WorldBookDiagnostics {
+  book_id: string;
+  chat_id: string;
+  attachment_sources: {
+    character: boolean;
+    persona: boolean;
+    global: boolean;
+    chat: boolean;
+  };
+  embeddings: {
+    enabled: boolean;
+    has_api_key: boolean;
+    dimensions: number | null;
+    vectorize_world_books: boolean;
+    similarity_threshold: number;
+    rerank_cutoff: number;
+    ready: boolean;
+  };
+  vector_summary: WorldBookVectorSummary;
+  query_preview: string;
+  eligible_entries: number;
+  retrieval: {
+    top_k: number;
+    hits_before_threshold: number;
+    hits_after_threshold: number;
+    threshold_rejected: number;
+    hits_after_rerank_cutoff: number;
+    rerank_rejected: number;
+    timings_ms: {
+      query_build: number;
+      query_embed: number;
+      search: number;
+      ranking: number;
+      merge: number;
+      total: number;
+    };
+  };
+  keyword_hits: Array<{
+    entry_id: string;
+    comment: string;
+  }>;
+  vector_hits: Array<{
+    entry_id: string;
+    comment: string;
+    score: number;
+    distance: number;
+    final_score: number;
+    lexical_candidate_score: number | null;
+    matched_primary_keys: string[];
+    matched_secondary_keys: string[];
+    matched_comment: string | null;
+    score_breakdown: {
+      vectorSimilarity: number;
+      lexicalContentBoost: number;
+      primaryExact: number;
+      primaryPartial: number;
+      secondaryExact: number;
+      secondaryPartial: number;
+      commentExact: number;
+      commentPartial: number;
+      focusBoost: number;
+      priority: number;
+      broadPenalty: number;
+      focusMissPenalty: number;
+    };
+    search_text_preview: string;
+    rerank_rank: number | null;
+    final_outcome_code:
+      | "injected_vector"
+      | "already_keyword"
+      | "blocked_by_group"
+      | "blocked_by_min_priority"
+      | "blocked_by_max_entries"
+      | "blocked_by_token_budget"
+      | "deduplicated"
+      | "blocked_during_final_assembly"
+      | "trimmed_by_top_k"
+      | "rejected_by_rerank_cutoff"
+      | "rejected_by_similarity_threshold";
+    final_outcome_label: string;
+    final_outcome_reason: string;
+  }>;
+  vector_trace: Array<{
+    entry_id: string;
+    comment: string;
+    score: number;
+    distance: number;
+    final_score: number;
+    lexical_candidate_score: number | null;
+    matched_primary_keys: string[];
+    matched_secondary_keys: string[];
+    matched_comment: string | null;
+    score_breakdown: {
+      vectorSimilarity: number;
+      lexicalContentBoost: number;
+      primaryExact: number;
+      primaryPartial: number;
+      secondaryExact: number;
+      secondaryPartial: number;
+      commentExact: number;
+      commentPartial: number;
+      focusBoost: number;
+      priority: number;
+      broadPenalty: number;
+      focusMissPenalty: number;
+    };
+    search_text_preview: string;
+    rerank_rank: number | null;
+    final_outcome_code:
+      | "injected_vector"
+      | "already_keyword"
+      | "blocked_by_group"
+      | "blocked_by_min_priority"
+      | "blocked_by_max_entries"
+      | "blocked_by_token_budget"
+      | "deduplicated"
+      | "blocked_during_final_assembly"
+      | "trimmed_by_top_k"
+      | "rejected_by_rerank_cutoff"
+      | "rejected_by_similarity_threshold";
+    final_outcome_label: string;
+    final_outcome_reason: string;
+  }>;
+  blocker_messages: string[];
+  deduplication?: {
+    removed_count: number;
+    removed: Array<{
+      removed_entry_id: string;
+      removed_entry_comment: string;
+      kept_entry_id: string;
+      kept_entry_comment: string;
+      tier: "exact" | "near-exact" | "fuzzy";
+      similarity?: number;
+    }>;
+  };
+  stats: {
+    keywordActivated: number;
+    vectorActivated: number;
+    totalActivated: number;
+    totalCandidates: number;
+    activatedBeforeBudget: number;
+    activatedAfterBudget: number;
+    evictedByBudget: number;
+    evictedByMinPriority: number;
+    estimatedTokens: number;
+    recursionPassesUsed: number;
+    deduplicated: number;
+    queryPreview: string;
+  };
+}
+
+export interface CreateWorldBookInput {
+  name: string;
+  description?: string;
+  folder?: string;
+  metadata?: Record<string, any>;
+}
+
+export type UpdateWorldBookInput = Partial<CreateWorldBookInput>;
+
+export interface CreateWorldBookEntryInput {
+  outlet_name?: string | null;
+  key?: string[];
+  keysecondary?: string[];
+  content?: string;
+  comment?: string;
+  position?: number;
+  depth?: number;
+  role?: string;
+  order_value?: number;
+  selective?: boolean;
+  constant?: boolean;
+  disabled?: boolean;
+  group_name?: string;
+  group_override?: boolean;
+  group_weight?: number;
+  probability?: number;
+  scan_depth?: number;
+  case_sensitive?: boolean;
+  match_whole_words?: boolean;
+  automation_id?: string;
+  use_regex?: boolean;
+  prevent_recursion?: boolean;
+  exclude_recursion?: boolean;
+  delay_until_recursion?: boolean;
+  priority?: number;
+  sticky?: number;
+  cooldown?: number;
+  delay?: number;
+  selective_logic?: number;
+  use_probability?: boolean;
+  vectorized?: boolean;
+  extensions?: Record<string, any>;
+}
+
+export type UpdateWorldBookEntryInput = CreateWorldBookEntryInput;
+
+export interface DuplicateWorldBookEntryInput {
+  target_book_id?: string | null;
+}
+
+export interface ReorderWorldBookEntriesInput {
+  ordered_ids: string[];
+}
+
+export interface WorldBookEntryBulkDeleteInput {
+  action: "delete";
+  entry_ids: string[];
+}
+
+export interface WorldBookEntryBulkMoveInput {
+  action: "move";
+  entry_ids: string[];
+  target_book_id: string;
+}
+
+export interface WorldBookEntryBulkRenumberInput {
+  action: "renumber";
+  entry_ids: string[];
+  start?: number | null;
+  step?: number;
+  direction?: "asc" | "desc";
+}
+
+export interface WorldBookEntryBulkAddKeywordInput {
+  action: "add_keyword";
+  entry_ids: string[];
+  keyword: string;
+  target?: "primary" | "secondary";
+}
+
+export interface WorldBookEntryBulkSetPositionInput {
+  action: "set_position";
+  entry_ids: string[];
+  position: number;
+  depth?: number;
+}
+
+export type WorldBookEntryBulkActionInput =
+  | WorldBookEntryBulkDeleteInput
+  | WorldBookEntryBulkMoveInput
+  | WorldBookEntryBulkRenumberInput
+  | WorldBookEntryBulkAddKeywordInput
+  | WorldBookEntryBulkSetPositionInput;
+
+export interface WorldBookEntryBulkActionResult {
+  action: WorldBookEntryBulkActionInput["action"];
+  affected: number;
+  target_book_id?: string;
+}
+
+// --- World Info Assembly Cache ---
+
+export interface WorldInfoCache {
+  before: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;         // position 0
+  after: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;          // position 1
+  anBefore: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;       // position 2
+  anAfter: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;        // position 3
+  depth: Array<{ content: string; depth: number; role: "system" | "user" | "assistant"; entryLabel: string }>; // position 4
+  emBefore: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;       // position 5
+  emAfter: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;        // position 6
+  atMarker: Array<{ content: string; role: "system" | "user" | "assistant"; entryLabel: string }>;       // position 7
+}

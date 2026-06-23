@@ -1,0 +1,405 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Lumiverse Launcher (Windows)
+
+.DESCRIPTION
+    Start backend and serve pre-built frontend (default).
+    Use -Build to rebuild the frontend before starting.
+
+.PARAMETER Mode
+    all          - Start backend, serve pre-built frontend (default)
+    build-only   - Build frontend only
+    backend-only - Start backend only, skip frontend serving
+    dev          - Start backend in watch mode
+    setup           - Run setup wizard only
+    reset-password  - Reset owner account password
+    edit-env        - Edit the .env file ($env:VISUAL/$env:EDITOR, else Notepad)
+    migrate-st      - Run SillyTavern migration helper
+    kill-pkgs       - Nuke lockfiles + node_modules, reinstall backend deps
+
+.PARAMETER Build
+    Rebuild the frontend before starting the backend
+
+.PARAMETER KillPkgs
+    Nuke lockfiles and node_modules, then reinstall backend dependencies
+
+.PARAMETER EditEnv
+    Open the .env file in an editor ($env:VISUAL/$env:EDITOR if set, else Notepad)
+
+.PARAMETER FrontendPath
+    Path to frontend directory (default: ./frontend)
+
+.PARAMETER NoRunner
+    Start without the visual terminal runner
+
+.PARAMETER UpgradeBun
+    Upgrade Bun to the latest stable release before continuing
+
+.PARAMETER UpgradeBunCanary
+    Upgrade Bun to the latest canary build before continuing
+#>
+
+param(
+    [ValidateSet("all", "build-only", "backend-only", "dev", "setup", "reset-password", "edit-env", "migrate-st", "kill-pkgs")]
+    [string]$Mode = "all",
+
+    [Alias("b")]
+    [switch]$Build,
+
+    [Alias("m")]
+    [switch]$MigrateST,
+
+    [string]$FrontendPath,
+
+    [switch]$NoRunner,
+
+    [Alias("k")]
+    [switch]$KillPkgs,
+
+    [switch]$EditEnv,
+
+    [switch]$UpgradeBun,
+
+    [switch]$UpgradeBunCanary
+)
+
+$ErrorActionPreference = "Stop"
+
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function Write-Info  { param([string]$Msg) Write-Host "[info]  $Msg" -ForegroundColor Cyan }
+function Write-Ok    { param([string]$Msg) Write-Host "[ok]    $Msg" -ForegroundColor Green }
+function Write-Warn  { param([string]$Msg) Write-Host "[warn]  $Msg" -ForegroundColor Yellow }
+function Write-Err   { param([string]$Msg) Write-Host "[error] $Msg" -ForegroundColor Red }
+
+# ─── Resolve paths ───────────────────────────────────────────────────────────
+
+$BackendDir  = $PSScriptRoot
+
+if (-not $FrontendPath) { $FrontendPath = Join-Path $BackendDir "frontend" }
+
+# ─── Ensure Bun is installed ────────────────────────────────────────────────
+
+function Ensure-Bun {
+    $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
+    if ($bunCmd) {
+        $version = & bun --version
+        Write-Ok "Bun $version found"
+        return
+    }
+
+    Write-Warn "Bun not found. Installing..."
+
+    # ── Install Bun ──────────────────────────────────────────────────────
+    # Piping directly to iex (irm ... | iex) breaks the installer's
+    # param() block — $Version and other parameters never bind, which
+    # can abort the install entirely.  Wrapping in a scriptblock via
+    # & { ... } lets PowerShell parse param() correctly.
+    try {
+        iex "& {$(irm https://bun.sh/install.ps1)}"
+    } catch {
+        Write-Err "Bun installation failed: $_"
+        Write-Err "Please install manually: https://bun.sh"
+        exit 1
+    }
+
+    # ── Make bun available in this session ────────────────────────────────
+    # The installer updates the user-level PATH but the current process
+    # still has the stale copy.  Refresh it, then fall back to known
+    # default install locations if Get-Command still can't find bun.
+
+    # Pull in the freshly-updated user PATH so this session sees bun
+    $machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+    $userPath    = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $env:PATH    = "$userPath;$machinePath"
+
+    # Also explicitly prepend the default install bin directory
+    $bunInstall = if ($env:BUN_INSTALL) { $env:BUN_INSTALL } else { Join-Path $env:USERPROFILE ".bun" }
+    $bunBin = Join-Path $bunInstall "bin"
+    if (Test-Path $bunBin) {
+        $env:PATH = "$bunBin;$env:PATH"
+    }
+
+    $bunCmd = Get-Command bun -ErrorAction SilentlyContinue
+    if ($bunCmd) {
+        $version = & bun --version
+        Write-Ok "Bun $version installed successfully"
+        return
+    }
+
+    # Last resort: check default install locations directly
+    $tryPaths = @(
+        (Join-Path $bunInstall "bin" "bun.exe"),
+        (Join-Path $env:USERPROFILE ".bun" "bin" "bun.exe")
+    )
+    foreach ($tryPath in $tryPaths) {
+        if (Test-Path $tryPath) {
+            $version = & $tryPath --version
+            Write-Ok "Bun $version installed (using direct path: $tryPath)"
+            $env:PATH = "$(Split-Path $tryPath);$env:PATH"
+            return
+        }
+    }
+
+    Write-Err "Bun installation failed. Please install manually: https://bun.sh"
+    exit 1
+}
+
+# ─── Bun channel upgrade (optional) ─────────────────────────────────────────
+# Honors -UpgradeBun / -UpgradeBunCanary. Runs after Ensure-Bun so the binary
+# exists; `bun upgrade [--canary|--stable]` swaps the binary in-place.
+function Update-BunChannel {
+    if (-not $UpgradeBun -and -not $UpgradeBunCanary) { return }
+
+    $before = try { & bun --version } catch { "unknown" }
+
+    if ($UpgradeBunCanary) {
+        Write-Info "Upgrading Bun to latest canary (current: $before)..."
+        try { & bun upgrade --canary } catch {
+            Write-Err "Bun canary upgrade failed: $_"
+            Write-Warn "Continuing with the existing $before binary."
+            return
+        }
+    } else {
+        Write-Info "Upgrading Bun to latest stable (current: $before)..."
+        # --stable is a no-op for users already on stable but forces a switch
+        # back from canary for anyone who previously opted in.
+        try { & bun upgrade --stable } catch {
+            Write-Err "Bun stable upgrade failed: $_"
+            Write-Warn "Continuing with the existing $before binary."
+            return
+        }
+    }
+
+    $after = try { & bun --version } catch { "unknown" }
+    Write-Ok "Bun upgraded: $before -> $after"
+}
+
+# ─── First-run setup wizard ─────────────────────────────────────────────────
+
+function Invoke-SetupIfNeeded {
+    $identityFile = Join-Path $BackendDir "data\lumiverse.identity"
+    $credentialsFile = Join-Path $BackendDir "data\owner.credentials"
+
+    # A migrated data folder is already set up even if .env was not copied.
+    # The backend can fall back to defaults for missing .env values.
+    if (-not (Test-Path $identityFile) -or -not (Test-Path $credentialsFile)) {
+        Write-Info "First run detected - launching setup wizard..."
+        Write-Host ""
+        Install-Deps $BackendDir "backend"
+        Push-Location $BackendDir
+        try { & bun run scripts/setup-wizard.ts } finally { Pop-Location }
+
+        if (-not (Test-Path $identityFile) -or -not (Test-Path $credentialsFile)) {
+            Write-Err "Setup wizard did not create the required identity and owner credentials."
+            Write-Err "Files expected at: $identityFile and $credentialsFile"
+            Write-Err "Try running the wizard manually: bun run setup"
+            exit 1
+        }
+    }
+}
+
+function Invoke-Setup {
+    Install-Deps $BackendDir "backend"
+    Push-Location $BackendDir
+    try { & bun run scripts/setup-wizard.ts } finally { Pop-Location }
+}
+
+function Invoke-ResetPassword {
+    Install-Deps $BackendDir "backend"
+    Write-Info "Launching password reset..."
+    Push-Location $BackendDir
+    try { & bun run reset-password } finally { Pop-Location }
+}
+
+function Invoke-MigrateST {
+    Install-Deps $BackendDir "backend"
+    Write-Info "Launching SillyTavern migration helper..."
+    Push-Location $BackendDir
+    try { & bun run migrate:st } finally { Pop-Location }
+}
+
+function Invoke-EditEnv {
+    # No dep install - edit-env.ts only uses Bun built-ins + local ui/input
+    # helpers, so it's a quick hop to the editor (handy before first setup).
+    Push-Location $BackendDir
+    try { & bun run scripts/edit-env.ts } finally { Pop-Location }
+}
+
+# ─── Kill packages (nuke + reinstall) ──────────────────────────────────────
+
+function Invoke-KillPkgs {
+    Write-Warn "Removing lockfiles and node_modules..."
+
+    $paths = @(
+        (Join-Path $BackendDir "bun.lock"),
+        (Join-Path $FrontendPath "bun.lock")
+    )
+    foreach ($p in $paths) {
+        if (Test-Path $p) { Remove-Item $p -Force }
+    }
+
+    $dirs = @(
+        (Join-Path $BackendDir "node_modules"),
+        (Join-Path $FrontendPath "node_modules")
+    )
+    foreach ($d in $dirs) {
+        if (Test-Path $d) { Remove-Item $d -Recurse -Force }
+    }
+
+    Write-Ok "Cleaned lockfiles and node_modules from backend and frontend"
+
+    Install-Deps $BackendDir "backend"
+    Write-Ok "Backend dependencies reinstalled (frontend deps will install on next build)"
+}
+
+# ─── Load .env into current process ─────────────────────────────────────────
+
+function Load-EnvFile {
+    $envFile = Join-Path $BackendDir ".env"
+    if (-not (Test-Path $envFile)) { return }
+
+    Get-Content $envFile | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith("#") -and $line -match '^([^=]+)=(.*)$') {
+            [Environment]::SetEnvironmentVariable($Matches[1], $Matches[2], "Process")
+        }
+    }
+}
+
+# ─── Install dependencies ───────────────────────────────────────────────────
+
+function Install-Deps {
+    param([string]$Dir, [string]$Name)
+
+    Write-Info "Installing $Name dependencies..."
+    Push-Location $Dir
+    try { & bun install } finally { Pop-Location }
+    Write-Ok "$Name dependencies installed"
+}
+
+# ─── Build frontend ─────────────────────────────────────────────────────────
+
+function Build-Frontend {
+    if (-not (Test-Path $FrontendPath)) {
+        Write-Err "Frontend directory not found at: $FrontendPath"
+        Write-Err "Pass -FrontendPath to specify the correct location."
+        exit 1
+    }
+
+    Install-Deps $FrontendPath "frontend"
+
+    Write-Info "Building frontend..."
+    Push-Location $FrontendPath
+    try { & bun run build } finally { Pop-Location }
+
+    $distDir = Join-Path $FrontendPath "dist"
+    Write-Ok "Frontend built -> $distDir"
+}
+
+# ─── Start backend ──────────────────────────────────────────────────────────
+
+function Start-Backend {
+    $frontendDist = ""
+    $distDir = Join-Path $FrontendPath "dist"
+
+    if ($Mode -ne "dev" -and (Test-Path $distDir)) {
+        $frontendDist = $distDir
+        Write-Info "Serving frontend from: $frontendDist"
+    } elseif ($Mode -ne "dev") {
+        Write-Warn "No frontend build found. Backend will start without serving frontend."
+        Write-Warn "Run './start.ps1 -Mode build-only' first, or use default mode to build + start."
+    }
+
+    Install-Deps $BackendDir "backend"
+
+    # Clear Bun install cache to avoid stale tarballs after updates.
+    # Bun writes its `.env` autoload notice to stderr; PowerShell promotes any
+    # native stderr write to a NativeCommandError, so merge streams and discard.
+    try { & bun pm cache rm 2>&1 | Out-Null } catch { }
+
+    $env:FRONTEND_DIR = $frontendDist
+    Load-EnvFile
+
+    # smol (low-memory GC mode) defaults on; operators disable it persistently
+    # via LUMIVERSE_SMOL=false in .env (survives auto-updates, unlike bunfig.toml).
+    # The visual runner applies this itself in scripts/runner/server-manager.ts;
+    # this only covers the plain (no-runner) launch below.
+    $smolArgs = @("--smol")
+    $smolVal = if ($env:LUMIVERSE_SMOL) { $env:LUMIVERSE_SMOL.Trim().ToLower() } else { "" }
+    if ($smolVal -in @("false", "0", "off", "no")) { $smolArgs = @() }
+
+    # Decide: visual runner or plain process
+    $isTTY = [Environment]::UserInteractive -and -not $NoRunner
+    if ($isTTY) {
+        $runnerArgs = @("run", "scripts/runner.ts")
+        if ($Mode -eq "dev") { $runnerArgs += @("--", "--dev") }
+        Push-Location $BackendDir
+        try { & bun @runnerArgs } finally { Pop-Location }
+    } else {
+        $port = if ($env:PORT) { $env:PORT } else { "7860" }
+        Write-Host ""
+        Write-Host "Starting Lumiverse Backend on port $port..." -ForegroundColor White
+        Write-Host ""
+
+        Push-Location $BackendDir
+        try {
+            if ($Mode -eq "dev") {
+                & bun @smolArgs --watch src/index.ts
+            } else {
+                & bun @smolArgs src/index.ts
+            }
+        } finally { Pop-Location }
+    }
+}
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+Write-Host ""
+Write-Host "Lumiverse - Launcher" -ForegroundColor White
+Write-Host ""
+
+Ensure-Bun
+Update-BunChannel
+
+# Allow switches as shorthand for -Mode
+if ($MigrateST) { $Mode = "migrate-st" }
+if ($KillPkgs)  { $Mode = "kill-pkgs" }
+if ($EditEnv)   { $Mode = "edit-env" }
+
+switch ($Mode) {
+    "all" {
+        Invoke-SetupIfNeeded
+        if ($Build) {
+            Build-Frontend
+        }
+        Start-Backend
+    }
+    "build-only" {
+        Build-Frontend
+    }
+    "backend-only" {
+        Invoke-SetupIfNeeded
+        Start-Backend
+    }
+    "dev" {
+        Invoke-SetupIfNeeded
+        Start-Backend
+    }
+    "setup" {
+        Invoke-Setup
+    }
+    "reset-password" {
+        Invoke-ResetPassword
+    }
+    "migrate-st" {
+        Invoke-MigrateST
+    }
+    "edit-env" {
+        Invoke-EditEnv
+    }
+    "kill-pkgs" {
+        Invoke-KillPkgs
+    }
+}

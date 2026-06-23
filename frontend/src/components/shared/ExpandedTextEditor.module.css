@@ -1,0 +1,507 @@
+/* ── Full-screen expanded text editor modal ── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  height: var(--app-scaled-viewport-height, calc(100vh / var(--lumiverse-ui-scale, 1)));
+  width: var(--app-scaled-viewport-width, calc(100vw / var(--lumiverse-ui-scale, 1)));
+  bottom: calc(0px - var(--ios-viewport-offset, 0px));
+  background: var(--lumiverse-fill-deepest);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10010;
+  padding: 24px;
+}
+
+:global([data-glass]) .overlay {
+  background: var(--lumiverse-modal-backdrop, rgba(0, 0, 0, 0.6));
+  backdrop-filter: blur(var(--lcs-glass-soft-blur, 6px));
+}
+
+.dialog {
+  background: var(--lumiverse-bg, #0f0d15);
+  border: 1px solid var(--lumiverse-border);
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: clamp(340px, calc(94vw / var(--lumiverse-ui-scale, 1)), min(900px, var(--lumiverse-content-max-width, 900px)));
+  height: calc(80vh / var(--lumiverse-ui-scale, 1));
+  max-height: calc(80vh / var(--lumiverse-ui-scale, 1));
+  box-shadow: 0 32px 80px rgba(0, 0, 0, 0.6), 0 0 1px var(--lumiverse-primary-020);
+  overflow: hidden;
+}
+
+/* ── Inline variant (renders in-flow below the field) ── */
+
+.inlineDialog {
+  background: var(--lumiverse-bg, #0f0d15);
+  border: 1px solid var(--lumiverse-primary);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 380px;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--lumiverse-border);
+  background: var(--lumiverse-bg-elevated);
+  flex-shrink: 0;
+}
+
+.headerContent {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.title {
+  margin: 0;
+  font-size: calc(15px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  color: var(--lumiverse-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.macroToggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text-dim);
+  font-size: calc(11.5px * var(--lumiverse-font-scale, 1));
+  cursor: pointer;
+  transition: all 0.15s ease;
+  align-self: flex-start;
+}
+
+.macroToggle:hover {
+  border-color: var(--lumiverse-primary);
+  color: var(--lumiverse-primary);
+}
+
+.closeBtn {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.closeBtn:hover {
+  background: var(--lumiverse-fill-hover);
+  color: var(--lumiverse-text);
+}
+
+/* ── Body ── */
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editorArea {
+  flex: 1;
+  min-width: 0;
+  /* min-height:0 lets this flex child shrink below its (very tall) content so
+     the inner scroll box engages. Without it, on mobile the body switches to a
+     column flex and this item's default min-height:auto balloons to the full
+     <pre> height, overflowing the clipped body and killing scroll. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* ── Plain textarea (no highlighting) ── */
+
+.textarea {
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  margin: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+  color: var(--lumiverse-text);
+  caret-color: var(--lumiverse-text);
+  font-family: inherit;
+  font-size: calc(14px * var(--lumiverse-font-scale, 1));
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
+
+.textarea::placeholder {
+  color: var(--lumiverse-text-dim);
+}
+
+/* ── Syntax-highlighted overlay (grid-stacked) ──
+   The colored <pre> (in-flow) and the transparent <textarea> (which owns the
+   caret + real text) are stacked into the SAME single grid cell, so the grid
+   sizes BOTH to one identical box.
+
+   This matters under CSS `zoom` UI scaling: --lumiverse-ui-scale is applied as
+   `zoom` on `body > *` (see reset.css) and this modal portals into that zoom
+   layer. A `position: absolute; inset: 0` textarea rounds its box differently
+   from the in-flow <pre> at fractional zoom values, which shifted the caret off
+   the highlighted glyphs (a documented form-control-under-zoom caret bug, worst
+   when the field is absolutely positioned). Sharing one grid cell removes that
+   absolute box entirely — both layers resolve to the exact same track geometry,
+   so caret and glyphs stay locked together at any zoom factor.
+
+   `.highlightContainer` stays the sole scroll box (single-scroller), so there's
+   no per-element scrollbar gutter and no JS scroll-syncing is required. */
+
+.highlightContainer {
+  flex: 1;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+.highlightInner {
+  display: grid;
+  /* Single cell that both layers share. minmax(0, 1fr) fills the width while
+     letting the textarea's intrinsic `cols` width shrink instead of widening
+     the track. The implicit auto row grows to the <pre>'s content height and,
+     via the grid's default stretch, fills the container when content is short
+     (so the caret-bearing textarea always covers the full clickable area). */
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 100%;
+}
+
+.highlightPre {
+  grid-area: 1 / 1;
+  min-width: 0;
+  margin: 0;
+  padding: 16px;
+  font-family: var(--lumiverse-font-mono, monospace);
+  font-size: calc(13px * var(--lumiverse-font-scale, 1));
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 2;
+  color: var(--lumiverse-text);
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+.textareaHighlighted {
+  /* Stacked in the SAME grid cell as .highlightPre — no absolute positioning,
+     so there's no separate box to round differently from the <pre> under CSS
+     zoom. Grid stretch sizes it to the shared cell (== the <pre>'s box). */
+  grid-area: 1 / 1;
+  min-width: 0;
+  padding: 16px;
+  margin: 0;
+  border: none;
+  outline: none;
+  resize: none;
+  overflow: hidden;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--lumiverse-text);
+  font-family: var(--lumiverse-font-mono, monospace);
+  font-size: calc(13px * var(--lumiverse-font-scale, 1));
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+  tab-size: 2;
+  -webkit-text-fill-color: transparent;
+  box-sizing: border-box;
+}
+
+.textareaHighlighted::placeholder {
+  color: var(--lumiverse-text-dim);
+  -webkit-text-fill-color: var(--lumiverse-text-dim);
+}
+
+/* Lock per-character glyph advance across BOTH layers so the caret (which lives
+   in the <textarea>) and the visible glyphs (in the <pre>) never drift apart.
+   A <textarea> shapes text with kerning/ligatures effectively OFF (it treats
+   glyphs as fixed cells for caret math), while a <pre> applies the font's
+   kerning + contextual ligatures by default. That asymmetry shifts the
+   highlighted text away from the caret — worsening along each line and around
+   ligature-prone tokens this editor is full of ({{ }} :: -> ==), especially on
+   ligature mono fonts (Fira Code, JetBrains Mono). Forcing the same minimal
+   shaping on both keeps them in step. text-size-adjust pins mobile text
+   inflation, which hits the <pre> (content) but not the form control.
+   These two selectors MUST stay grouped — divergence here = caret drift. */
+.highlightPre,
+.textareaHighlighted {
+  letter-spacing: 0;
+  word-spacing: 0;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+  text-rendering: optimizeSpeed;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* ── Syntax highlight tokens ── */
+
+.hlBracket {
+  color: #c792ea;
+  font-weight: 700;
+}
+
+.hlMacroName {
+  color: var(--lumiverse-primary, #9370db);
+  font-weight: 700;
+}
+
+.hlSep {
+  color: var(--lumiverse-text-dim, #666);
+  opacity: 0.6;
+}
+
+.hlXmlTag {
+  color: #82aaff;
+}
+
+.hlMdDelim {
+  color: var(--lumiverse-text-dim, #666);
+  opacity: 0.55;
+}
+
+.hlMdCode {
+  color: #c3e88d;
+}
+
+.hlMdHeader {
+  color: #f78c6c;
+  font-weight: 700;
+}
+
+/* ── Macro sidebar ── */
+
+.macroSidebar {
+  width: 260px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--lumiverse-border);
+  display: flex;
+  flex-direction: column;
+  background: var(--lumiverse-fill-subtle, rgba(0, 0, 0, 0.06));
+  overflow-x: hidden;
+}
+
+.macroList {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.macroSearch {
+  padding: 8px;
+  border-bottom: 1px solid var(--lumiverse-border);
+}
+
+.macroSearchInner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--lumiverse-input-bg, rgba(0, 0, 0, 0.2));
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: border-color 0.15s ease;
+}
+
+.macroSearchInner:focus-within {
+  border-color: var(--lumiverse-primary-020);
+}
+
+.macroSearchInput {
+  border: none;
+  padding: 2px;
+  background: transparent;
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  width: 100%;
+  color: var(--lumiverse-text);
+  outline: none;
+}
+
+.macroGroup {
+  padding: 6px 0;
+}
+
+.macroGroupTitle {
+  font-size: calc(10px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  color: var(--lumiverse-text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 4px 12px;
+}
+
+.macroItem {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 5px 12px;
+  cursor: pointer;
+  border-radius: 6px;
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  margin: 0 4px;
+  transition: background 0.15s ease;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.macroItem:hover {
+  background: var(--lumiverse-fill-subtle, rgba(255, 255, 255, 0.05));
+}
+
+.macroSyntax {
+  font-family: var(--lumiverse-font-mono, monospace);
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.macroDesc {
+  font-size: calc(10px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Expandable textarea wrapper ── */
+
+.textareaWrapper {
+  position: relative;
+  width: 100%;
+}
+
+.textareaWrapper > textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.expandBtn {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: var(--lumiverse-btn-icon-sm);
+  height: var(--lumiverse-btn-icon-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  background: var(--lumiverse-bg, #0f0d15);
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s ease;
+  z-index: 1;
+}
+
+.textareaWrapper:hover .expandBtn,
+.textareaWrapper:focus-within .expandBtn {
+  opacity: 1;
+}
+
+.expandBtn:hover {
+  color: var(--lumiverse-primary);
+  border-color: var(--lumiverse-primary);
+}
+
+/* ── Mobile ── */
+
+@media (max-width: 600px) {
+  .overlay {
+    padding: 0;
+  }
+
+  .dialog {
+    max-width: 100%;
+    max-height: 100%;
+    height: 100%;
+    border-radius: 0;
+    padding-top: env(safe-area-inset-top, 0);
+  }
+
+  .body {
+    flex-direction: column;
+  }
+
+  .textarea {
+    font-size: calc(16px * var(--lumiverse-font-scale, 1)); /* Prevent iOS/Android auto-zoom on focus */
+  }
+
+  .textareaHighlighted,
+  .highlightPre {
+    /* Mirror the global reset's mobile form-control rule
+       (`input,textarea,select { font-size: max(16px, 1em) !important }`, which
+       blocks iOS focus auto-zoom). The reset can't target the <pre>, so the two
+       overlay layers would otherwise diverge whenever --lumiverse-font-scale ≠ 1
+       (the textarea gets forced to max(16px,1em) while the <pre> keeps the module
+       value). Using the identical formula keeps both at ONE font-size for every
+       scale — 1em resolves to the same inherited size for each, so the caret and
+       the highlighted glyphs stay aligned. */
+    font-size: max(16px, 1em);
+  }
+
+  .macroSidebar {
+    width: 100%;
+    max-height: 320px;
+    border-right: none;
+    border-bottom: 1px solid var(--lumiverse-border);
+    flex-shrink: 0;
+  }
+}
+
+/* Touch-only devices have no hover, so reveal the expand button permanently.
+   Uses `any-hover: none` so it only matches when NO input device supports hover
+   (true phones/tablets). `hover: none` incorrectly matches on Windows touchscreen
+   laptops in Firefox/Edge. The single-scroller overlay above tracks the caret
+   correctly on touch, so syntax highlighting stays enabled here. */
+@media (any-hover: none) {
+  .expandBtn {
+    opacity: 0.7;
+  }
+}

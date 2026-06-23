@@ -1,0 +1,739 @@
+import type { WorldBookEntry } from "../types/world-book";
+import type { WorldInfoCache } from "../types/world-book";
+import type { Message } from "../types/message";
+import { WorldInfoMatcher, makeScanState, type ScanState } from "./world-info-matcher.service";
+
+/**
+ * Per-entry sticky/cooldown/delay tracking state, stored in chat.metadata.wi_state.
+ * Keyed by entry UID.
+ */
+export interface WiEntryState {
+  stickyLeft: number;   // turns remaining while sticky-active after keywords stop matching
+  cooldownLeft: number; // turns remaining before re-activation allowed
+  delayCount: number;   // consecutive turns keyword matched (for delay threshold)
+  active: boolean;      // currently contributing to prompt
+}
+
+export type WiState = Record<string, WiEntryState>;
+
+/**
+ * Global world info activation settings. Stored as the `worldInfoSettings`
+ * settings key. All fields have safe defaults that preserve backwards
+ * compatibility (no limits applied when unset).
+ */
+export interface WorldInfoSettings {
+  /** Default scan depth for entries with scan_depth=null. null = scan all messages. */
+  globalScanDepth: number | null;
+  /** Max recursion passes for keyword chaining (0 = no recursion). */
+  maxRecursionPasses: number;
+  /** Max total activated entries, including constants (0 = unlimited).
+   *  Constants are counted but never evicted — they take priority over conditional entries. */
+  maxActivatedEntries: number;
+  /** Approximate max total WI content in tokens (0 = unlimited). Uses chars/4 estimate. */
+  maxTokenBudget: number;
+  /** Minimum entry priority to be eligible for activation (0 = no filter). */
+  minPriority: number;
+}
+
+export const DEFAULT_WORLD_INFO_SETTINGS: WorldInfoSettings = {
+  globalScanDepth: null,
+  maxRecursionPasses: 3,
+  maxActivatedEntries: 0,
+  maxTokenBudget: 0,
+  minPriority: 0,
+};
+
+function nonNegativeInteger(value: unknown, fallback: number): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return Math.max(0, Math.floor(value));
+}
+
+export function normalizeWorldInfoSettings(
+  settingsInput?: Partial<WorldInfoSettings>,
+): WorldInfoSettings {
+  const input = settingsInput ?? {};
+  const defaultScanDepth = DEFAULT_WORLD_INFO_SETTINGS.globalScanDepth;
+  const rawScanDepth = input.globalScanDepth;
+  const globalScanDepth =
+    typeof rawScanDepth === "number" && Number.isFinite(rawScanDepth) && rawScanDepth > 0
+      ? Math.floor(rawScanDepth)
+      : defaultScanDepth;
+
+  return {
+    globalScanDepth,
+    maxRecursionPasses: nonNegativeInteger(
+      input.maxRecursionPasses,
+      DEFAULT_WORLD_INFO_SETTINGS.maxRecursionPasses,
+    ),
+    maxActivatedEntries: nonNegativeInteger(
+      input.maxActivatedEntries,
+      DEFAULT_WORLD_INFO_SETTINGS.maxActivatedEntries,
+    ),
+    maxTokenBudget: nonNegativeInteger(
+      input.maxTokenBudget,
+      DEFAULT_WORLD_INFO_SETTINGS.maxTokenBudget,
+    ),
+    minPriority: nonNegativeInteger(
+      input.minPriority,
+      DEFAULT_WORLD_INFO_SETTINGS.minPriority,
+    ),
+  };
+}
+
+export interface ActivationInput {
+  entries: WorldBookEntry[];
+  messages: Message[];
+  chatTurn: number;           // current turn number (messages.length)
+  wiState: WiState;           // mutable — updated in place
+  settings?: Partial<WorldInfoSettings>;
+}
+
+/** Statistics about the activation run, useful for dry-run / debugging. */
+export interface ActivationStats {
+  totalCandidates: number;
+  activatedBeforeBudget: number;
+  activatedAfterBudget: number;
+  evictedByBudget: number;
+  evictedByMinPriority: number;
+  estimatedTokens: number;
+  recursionPassesUsed: number;
+  keywordActivated: number;
+  vectorActivated: number;
+  totalActivated: number;
+  deduplicated: number;
+  queryPreview: string;
+}
+
+export interface ActivationResult {
+  cache: WorldInfoCache;
+  activatedEntries: WorldBookEntry[];
+  wiState: WiState;
+  stats: ActivationStats;
+}
+
+export interface FinalizedWorldInfoEntries {
+  cache: WorldInfoCache;
+  activatedEntries: WorldBookEntry[];
+  activatedBeforeBudget: number;
+  activatedAfterBudget: number;
+  evictedByBudget: number;
+  estimatedTokens: number;
+}
+
+export interface FinalizeWorldInfoOptions {
+  skipGroupLogic?: boolean;
+  preserveOrder?: boolean;
+}
+
+// ─── Activation cache (short-TTL for rapid dry-run optimization) ───
+
+const WI_ACTIVATION_CACHE_TTL_MS = 30_000;
+const WI_ACTIVATION_CACHE_MAX_ENTRIES = 256;
+
+interface CachedActivationResult {
+  result: ActivationResult;
+  cachedAt: number;
+}
+
+const wiActivationCache = new Map<string, CachedActivationResult>();
+
+function pruneWiActivationCache(now = Date.now()): void {
+  for (const [key, cached] of wiActivationCache) {
+    if (now - cached.cachedAt > WI_ACTIVATION_CACHE_TTL_MS) {
+      wiActivationCache.delete(key);
+    }
+  }
+
+  while (wiActivationCache.size >= WI_ACTIVATION_CACHE_MAX_ENTRIES) {
+    const oldest = wiActivationCache.keys().next();
+    if (oldest.done) break;
+    wiActivationCache.delete(oldest.value);
+  }
+}
+
+function computeWiActivationCacheKey(input: ActivationInput): string {
+  const entries = input.entries;
+  const messages = input.messages;
+  const wiState = input.wiState;
+  const settings = normalizeWorldInfoSettings(input.settings);
+  const entrySig = entries
+    .map((e) => JSON.stringify({
+      id: e.id,
+      uid: e.uid,
+      world_book_id: e.world_book_id,
+      key: e.key,
+      keysecondary: e.keysecondary,
+      content: e.content,
+      position: e.position,
+      depth: e.depth,
+      role: e.role,
+      order_value: e.order_value,
+      selective: e.selective,
+      constant: e.constant,
+      disabled: e.disabled,
+      group_name: e.group_name,
+      group_override: e.group_override,
+      group_weight: e.group_weight,
+      probability: e.probability,
+      scan_depth: e.scan_depth,
+      case_sensitive: e.case_sensitive,
+      match_whole_words: e.match_whole_words,
+      use_regex: e.use_regex,
+      prevent_recursion: e.prevent_recursion,
+      exclude_recursion: e.exclude_recursion,
+      delay_until_recursion: e.delay_until_recursion,
+      priority: e.priority,
+      sticky: e.sticky,
+      cooldown: e.cooldown,
+      delay: e.delay,
+      selective_logic: e.selective_logic,
+      use_probability: e.use_probability,
+      vectorized: e.vectorized,
+    }))
+    .join("|");
+  const msgSig = messages.map((m) => JSON.stringify({ id: m.id, content: m.content })).join("|");
+  const stateSig = JSON.stringify(wiState);
+  const settingsSig = JSON.stringify(settings);
+  return `${entrySig}::${msgSig}::${stateSig}::${settingsSig}`;
+}
+
+function deepCloneWiState(state: WiState): WiState {
+  return JSON.parse(JSON.stringify(state));
+}
+
+function getCachedActivationResult(cacheKey: string): ActivationResult | null {
+  const cached = wiActivationCache.get(cacheKey);
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > WI_ACTIVATION_CACHE_TTL_MS) {
+    wiActivationCache.delete(cacheKey);
+    return null;
+  }
+  return {
+    ...cached.result,
+    wiState: deepCloneWiState(cached.result.wiState),
+  };
+}
+
+function setCachedActivationResult(cacheKey: string, result: ActivationResult): void {
+  pruneWiActivationCache();
+  wiActivationCache.set(cacheKey, {
+    result: {
+      ...result,
+      wiState: deepCloneWiState(result.wiState),
+    },
+    cachedAt: Date.now(),
+  });
+}
+
+/**
+ * Run full World Info activation pipeline.
+ *
+ * Order: filter disabled → filter minPriority → separate constants →
+ * keyword match (with global scan depth fallback) → selective logic →
+ * probability → sticky/cooldown/delay → group logic → sort →
+ * budget enforcement → bucket by position.
+ */
+export function activateWorldInfo(input: ActivationInput): ActivationResult {
+  const cacheKey = computeWiActivationCacheKey(input);
+  const cached = getCachedActivationResult(cacheKey);
+  if (cached) return cached;
+
+  const { entries, messages, wiState } = input;
+  const settings = normalizeWorldInfoSettings(input.settings);
+
+  // 0. Cleanup wiState: Remove any keys that are no longer in the candidates list.
+  // This prevents hidden sticky/active entries from persisting after a lorebook is removed.
+  const entryUids = new Set(entries.map(e => e.uid));
+  for (const uid in wiState) {
+    if (!entryUids.has(uid)) {
+      delete wiState[uid];
+    }
+  }
+
+  // 1. Filter disabled entries
+  const enabledEntries = entries.filter(e => !e.disabled);
+
+  // 1b. Filter by minimum priority threshold
+  let evictedByMinPriority = 0;
+  const candidates = enabledEntries.filter(e => {
+    if (settings.minPriority > 0 && e.priority < settings.minPriority && !e.constant) {
+      evictedByMinPriority++;
+      return false;
+    }
+    return true;
+  });
+
+  // 2. Separate constants (always activate)
+  const constants: WorldBookEntry[] = [];
+  const conditional: WorldBookEntry[] = [];
+  for (const e of candidates) {
+    if (e.constant) constants.push(e);
+    else conditional.push(e);
+  }
+
+  // 3. Evaluate conditional entries
+  const activated: WorldBookEntry[] = [...constants];
+
+  const blockedByCooldown = new Set<string>();
+  const matchedThisTurn = new Set<string>();
+  const delayIncremented = new Set<string>();
+
+  for (const entry of conditional) {
+    const state = wiState[entry.uid];
+    if (!state || state.cooldownLeft <= 0) continue;
+    state.cooldownLeft--;
+    state.active = false;
+    blockedByCooldown.add(entry.uid);
+  }
+
+  const activatedUids = new Set<string>();
+  for (const entry of constants) {
+    activatedUids.add(entry.uid);
+  }
+
+  const maxPasses = settings.maxRecursionPasses;
+  const recursionPassesUsed = runAhoCorasickPasses({
+    conditional, constants, messages, settings, wiState,
+    activated, activatedUids, blockedByCooldown, matchedThisTurn, delayIncremented,
+    maxPasses,
+  });
+
+  for (const entry of conditional) {
+    if (activatedUids.has(entry.uid)) continue;
+    if (blockedByCooldown.has(entry.uid)) continue;
+    if (matchedThisTurn.has(entry.uid)) continue;
+    const state = wiState[entry.uid];
+    if (!state) continue;
+    handleNoMatch(state, entry);
+  }
+
+  // Also re-activate sticky entries that are still in their sticky window
+  for (const entry of conditional) {
+    if (activated.includes(entry)) continue;
+    const state = wiState[entry.uid];
+    if (state && state.stickyLeft > 0) {
+      state.stickyLeft--;
+      state.active = true;
+      activated.push(entry);
+      // When sticky expires, start cooldown
+      if (state.stickyLeft === 0 && entry.cooldown > 0) {
+        state.cooldownLeft = entry.cooldown;
+      }
+    }
+  }
+
+  const finalized = finalizeActivatedWorldInfoEntries(activated, settings);
+
+  const stats: ActivationStats = {
+    totalCandidates: candidates.length,
+    activatedBeforeBudget: finalized.activatedBeforeBudget,
+    activatedAfterBudget: finalized.activatedAfterBudget,
+    evictedByBudget: finalized.evictedByBudget,
+    evictedByMinPriority,
+    estimatedTokens: finalized.estimatedTokens,
+    recursionPassesUsed,
+    keywordActivated: finalized.activatedEntries.length,
+    vectorActivated: 0,
+    totalActivated: finalized.activatedEntries.length,
+    deduplicated: 0,
+    queryPreview: "",
+  };
+
+  const result: ActivationResult = { cache: finalized.cache, activatedEntries: finalized.activatedEntries, wiState, stats };
+  setCachedActivationResult(cacheKey, result);
+  return result;
+}
+
+export function finalizeActivatedWorldInfoEntries(
+  entries: WorldBookEntry[],
+  settingsInput?: Partial<WorldInfoSettings>,
+  options: FinalizeWorldInfoOptions = {},
+): FinalizedWorldInfoEntries {
+  const settings = normalizeWorldInfoSettings(settingsInput);
+
+  const afterGroups = options.skipGroupLogic
+    ? [...entries]
+    : applyGroupLogic([...entries]);
+  const insertableEntries = afterGroups.filter(hasMeaningfulWorldInfoContent);
+
+  if (!options.preserveOrder) {
+    insertableEntries.sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return a.order_value - b.order_value;
+    });
+  }
+
+  const activatedBeforeBudget = insertableEntries.length;
+  const activatedEntries = enforceBudget(insertableEntries, settings);
+  const evictedByBudget = activatedBeforeBudget - activatedEntries.length;
+
+  return {
+    cache: bucketByPosition(activatedEntries),
+    activatedEntries,
+    activatedBeforeBudget,
+    activatedAfterBudget: activatedEntries.length,
+    evictedByBudget,
+    estimatedTokens: estimateTokens(activatedEntries),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Budget enforcement
+// ---------------------------------------------------------------------------
+
+/** Rough token estimate: chars / 4 is a reasonable heuristic for English text. */
+function estimateEntryTokens(content: string): number {
+  return Math.ceil(content.length / 4);
+}
+
+function estimateTokens(entries: WorldBookEntry[]): number {
+  let total = 0;
+  for (const e of entries) {
+    if (e.content) total += estimateEntryTokens(e.content);
+  }
+  return total;
+}
+
+/**
+ * Enforce global budget limits on activated entries.
+ * Entries are already sorted by priority desc, order_value asc.
+ * Constants are never evicted — they take priority over conditional entries.
+ */
+function enforceBudget(entries: WorldBookEntry[], settings: WorldInfoSettings): WorldBookEntry[] {
+  let result = entries;
+
+  // Max activated entries cap
+  if (settings.maxActivatedEntries > 0 && result.length > settings.maxActivatedEntries) {
+    const constants: WorldBookEntry[] = [];
+    const nonConstants: WorldBookEntry[] = [];
+    for (const e of result) {
+      if (e.constant) constants.push(e);
+      else nonConstants.push(e);
+    }
+    // Allow all constants through, cap the remaining slots for conditional entries
+    const remaining = Math.max(0, settings.maxActivatedEntries - constants.length);
+    result = [...constants, ...nonConstants.slice(0, remaining)];
+  }
+
+  // Token budget cap
+  if (settings.maxTokenBudget > 0) {
+    let totalTokens = 0;
+    const kept: WorldBookEntry[] = [];
+
+    // Constants first (never evicted)
+    for (const e of result) {
+      if (e.constant) {
+        totalTokens += e.content ? estimateEntryTokens(e.content) : 0;
+        kept.push(e);
+      }
+    }
+
+    // Non-constants in priority order until budget exhausted
+    for (const e of result) {
+      if (e.constant) continue;
+      const tokens = e.content ? estimateEntryTokens(e.content) : 0;
+      if (totalTokens + tokens > settings.maxTokenBudget) continue;
+      totalTokens += tokens;
+      kept.push(e);
+    }
+
+    result = kept;
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface AhoCorasickPassArgs {
+  conditional: WorldBookEntry[];
+  constants: WorldBookEntry[];
+  messages: Message[];
+  settings: WorldInfoSettings;
+  wiState: WiState;
+  activated: WorldBookEntry[];
+  activatedUids: Set<string>;
+  blockedByCooldown: Set<string>;
+  matchedThisTurn: Set<string>;
+  delayIncremented: Set<string>;
+  maxPasses: number;
+}
+
+function runAhoCorasickPasses(args: AhoCorasickPassArgs): number {
+  const { conditional, constants, messages, settings, wiState,
+    activated, activatedUids, blockedByCooldown, matchedThisTurn, delayIncremented,
+    maxPasses } = args;
+
+  const matcher = new WorldInfoMatcher(conditional);
+  const state: ScanState = makeScanState();
+
+  // Pass 0 base: scan messages once per unique effective scan_depth.
+  // Pre-compute scan text per depth key and memoize so entries sharing the
+  // same effective depth don't rebuild the same concatenated string.
+  const depthBuckets = new Map<string, Set<string>>();
+  const depthKey = (d: number | null) => (d === null ? "all" : String(d));
+  for (const e of conditional) {
+    if (e.key.length === 0) continue;
+    const d = e.scan_depth ?? settings.globalScanDepth;
+    const k = depthKey(d);
+    let set = depthBuckets.get(k);
+    if (!set) { set = new Set(); depthBuckets.set(k, set); }
+    set.add(e.uid);
+  }
+  const scanTextCache = new Map<string, string>();
+  for (const [k, scope] of depthBuckets) {
+    const d = k === "all" ? null : Number(k);
+    let text = scanTextCache.get(k);
+    if (text === undefined) {
+      text = buildScanText(messages, d, "");
+      scanTextCache.set(k, text);
+    }
+    matcher.scanChunk(text, state, scope);
+  }
+
+  let recursionPassesUsed = 0;
+  let newContent = constants
+    .filter((entry) => entry.content && !entry.prevent_recursion && !entry.vectorized)
+    .map((entry) => entry.content);
+
+  for (let pass = 0; pass <= maxPasses; pass++) {
+    if (pass > 0) {
+      if (newContent.length === 0) break;
+      for (const chunk of newContent) matcher.scanChunk(chunk, state);
+      newContent = [];
+    }
+
+    let activatedThisPass = false;
+
+    for (const entry of conditional) {
+      if (activatedUids.has(entry.uid)) continue;
+      if (blockedByCooldown.has(entry.uid)) continue;
+      if (pass === 0 && entry.delay_until_recursion) continue;
+      // "Non-recursable" — exclude_recursion means the entry cannot be
+      // activated by a recursion pass (pass > 0). It can still activate on
+      // pass 0 from the raw chat messages.
+      if (pass > 0 && entry.exclude_recursion) continue;
+      if (pass > 0 && entry.vectorized) continue;
+      if (entry.key.length === 0) continue;
+
+      if (!matcher.shouldActivate(entry, state)) continue;
+
+      const entryState = getOrInitState(wiState, entry);
+      matchedThisTurn.add(entry.uid);
+
+      if (entry.delay > 0 && !delayIncremented.has(entry.uid)) {
+        entryState.delayCount++;
+        delayIncremented.add(entry.uid);
+      }
+      if (entry.delay > 0 && entryState.delayCount < entry.delay) continue;
+
+      if (entry.use_probability && entry.probability < 100) {
+        if (Math.random() * 100 >= entry.probability) continue;
+      }
+
+      entryState.active = true;
+      entryState.delayCount = 0;
+      if (entry.sticky > 0) entryState.stickyLeft = entry.sticky;
+
+      activated.push(entry);
+      activatedUids.add(entry.uid);
+      activatedThisPass = true;
+      // "Prevent Further Recursion" — activated entry's content is not fed
+      // back into the scanner for subsequent recursion passes.
+      if (entry.content && !entry.prevent_recursion && !entry.vectorized) newContent.push(entry.content);
+    }
+
+    if (activatedThisPass && pass > 0) recursionPassesUsed = pass;
+    if (!activatedThisPass && (pass > 0 || newContent.length === 0 || pass >= maxPasses)) break;
+  }
+
+  return recursionPassesUsed;
+}
+
+function getOrInitState(wiState: WiState, entry: WorldBookEntry): WiEntryState {
+  if (!wiState[entry.uid]) {
+    wiState[entry.uid] = { stickyLeft: 0, cooldownLeft: 0, delayCount: 0, active: false };
+  }
+  return wiState[entry.uid];
+}
+
+function handleNoMatch(state: WiEntryState, entry: WorldBookEntry): void {
+  // If was previously active with sticky, let sticky handler deal with it
+  if (state.active && state.stickyLeft <= 0) {
+    state.active = false;
+    state.delayCount = 0;
+  }
+  // Reset delay count on non-match (must be consecutive)
+  if (entry.delay > 0) {
+    state.delayCount = 0;
+  }
+}
+
+function buildScanText(messages: Message[], scanDepth: number | null, recursionText = ""): string {
+  const base = scanDepth === null || scanDepth <= 0 || scanDepth >= messages.length
+    ? joinMessageContents(messages)
+    : joinMessageContents(messages.slice(-scanDepth));
+
+  if (!recursionText) return base;
+  if (!base) return recursionText;
+  return `${base}\n${recursionText}`;
+}
+
+/**
+ * Join message content strings with newline separator. Avoids the intermediate
+ * array allocation that `messages.map(m => m.content).join("\n")` would create
+ * by building the result string directly in a single pass.
+ */
+function joinMessageContents(messages: Message[]): string {
+  if (messages.length === 0) return "";
+  if (messages.length === 1) return messages[0].content;
+  let result = messages[0].content;
+  for (let i = 1; i < messages.length; i++) {
+    result += "\n";
+    result += messages[i].content;
+  }
+  return result;
+}
+
+/**
+ * Apply group logic: entries with the same group_name compete.
+ * - group_override: highest priority entry wins
+ * - Otherwise: weighted random selection by group_weight
+ */
+function applyGroupLogic(entries: WorldBookEntry[]): WorldBookEntry[] {
+  const grouped = new Map<string, WorldBookEntry[]>();
+  const ungrouped: WorldBookEntry[] = [];
+
+  for (const entry of entries) {
+    if (entry.group_name) {
+      const list = grouped.get(entry.group_name) || [];
+      list.push(entry);
+      grouped.set(entry.group_name, list);
+    } else {
+      ungrouped.push(entry);
+    }
+  }
+
+  const result = [...ungrouped];
+
+  for (const [, group] of grouped) {
+    if (group.length === 1) {
+      result.push(group[0]);
+      continue;
+    }
+
+    // Check for override entries
+    const overrides = group.filter(e => e.group_override);
+    if (overrides.length > 0) {
+      // Highest priority override wins
+      overrides.sort((a, b) => b.priority - a.priority);
+      result.push(overrides[0]);
+      continue;
+    }
+
+    // Weighted random selection
+    const totalWeight = group.reduce((sum, e) => sum + (e.group_weight || 1), 0);
+    if (totalWeight <= 0) {
+      result.push(group[0]);
+      continue;
+    }
+
+    let roll = Math.random() * totalWeight;
+    for (const entry of group) {
+      roll -= entry.group_weight || 1;
+      if (roll <= 0) {
+        result.push(entry);
+        break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Bucket activated entries into WorldInfoCache positions:
+ *  0 = before, 1 = after, 2 = AN before, 3 = AN after,
+ *  4 = depth-based, 5 = EM before, 6 = EM after
+ */
+function bucketByPosition(entries: WorldBookEntry[]): WorldInfoCache {
+  const cache: WorldInfoCache = {
+    before: [],
+    after: [],
+    anBefore: [],
+    anAfter: [],
+    depth: [],
+    emBefore: [],
+    emAfter: [],
+    atMarker: [],
+  };
+
+  for (const entry of entries) {
+    const content = entry.content;
+    if (!hasMeaningfulWorldInfoContent(entry)) continue;
+    const role = normalizeRole(entry.role);
+    const entryLabel = getWorldInfoEntryLabel(entry);
+
+    switch (entry.position) {
+      case 0:
+        cache.before.push({ content, role, entryLabel });
+        break;
+      case 1:
+        cache.after.push({ content, role, entryLabel });
+        break;
+      case 2:
+        cache.anBefore.push({ content, role, entryLabel });
+        break;
+      case 3:
+        cache.anAfter.push({ content, role, entryLabel });
+        break;
+      case 4:
+        cache.depth.push({
+          content,
+          depth: entry.depth,
+          role,
+          entryLabel,
+        });
+        break;
+      case 5:
+        cache.emBefore.push({ content, role, entryLabel });
+        break;
+      case 6:
+        cache.emAfter.push({ content, role, entryLabel });
+        break;
+      case 7:
+        cache.atMarker.push({ content, role, entryLabel });
+        break;
+      default:
+        // Unknown position — treat as "before"
+        cache.before.push({ content, role, entryLabel });
+        break;
+    }
+  }
+
+  return cache;
+}
+
+function hasMeaningfulWorldInfoContent(entry: Pick<WorldBookEntry, "content">): boolean {
+  return typeof entry.content === "string" && entry.content.trim().length > 0;
+}
+
+function getWorldInfoEntryLabel(entry: Pick<WorldBookEntry, "id" | "comment" | "key" | "keysecondary">): string {
+  const comment = entry.comment?.trim();
+  if (comment) return comment;
+
+  const primaryKeys = entry.key?.map((key) => key.trim()).filter(Boolean) ?? [];
+  if (primaryKeys.length > 0) return primaryKeys.join(", ");
+
+  const secondaryKeys = entry.keysecondary?.map((key) => key.trim()).filter(Boolean) ?? [];
+  if (secondaryKeys.length > 0) return secondaryKeys.join(", ");
+
+  return `(unnamed entry ${entry.id.slice(0, 8)})`;
+}
+
+function normalizeRole(role: string | null): "system" | "user" | "assistant" {
+  if (role === "user" || role === "assistant") return role;
+  return "system";
+}

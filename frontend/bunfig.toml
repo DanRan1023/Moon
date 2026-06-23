@@ -1,0 +1,5 @@
+[install]
+peer = false
+
+[test]
+preload = ["./bun-test-setup.ts"]

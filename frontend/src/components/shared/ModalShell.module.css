@@ -1,0 +1,37 @@
+.backdrop {
+  position: fixed;
+  inset: 0;
+  bottom: calc(0px - var(--ios-viewport-offset, 0px));
+  /* Compensate for `body > * { zoom: ui-scale }`: the backdrop is itself a
+     direct child of body via portal, so `zoom` scales its dimensions. Divide
+     by ui-scale so the post-zoom render equals one full viewport. */
+  width: var(--app-scaled-viewport-width, calc(100vw / var(--lumiverse-ui-scale, 1)));
+  height: var(--app-scaled-viewport-height, calc(100vh / var(--lumiverse-ui-scale, 1)));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: var(--lumiverse-modal-backdrop, rgba(0, 0, 0, 0.6));
+}
+
+:global([data-glass]) .backdrop {
+  backdrop-filter: blur(var(--lcs-glass-soft-blur, 6px));
+}
+
+.modal {
+  position: relative;
+  width: 100%;
+  background: var(--lumiverse-gradient-modal, var(--lumiverse-bg));
+  border-radius: var(--lumiverse-radius-xl, 16px);
+  border: 1px solid var(--lumiverse-border);
+  box-shadow: var(--lumiverse-shadow-xl, 0 20px 60px rgba(0, 0, 0, 0.5));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+@media (max-width: 480px) {
+  .backdrop {
+    padding: 12px;
+  }
+}

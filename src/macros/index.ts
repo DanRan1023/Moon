@@ -1,0 +1,73 @@
+export { evaluate } from "./MacroEvaluator";
+export { buildEnv, cloneEnv, mergeDynamicMacros, resolveGroupCharacterNames, resolvePersonaPronouns, type BuildEnvContext } from "./MacroEnv";
+export { registry } from "./MacroRegistry";
+export type {
+  MacroEnv,
+  MacroHandler,
+  MacroDefinition,
+  MacroExecContext,
+  MacroDiagnostic,
+  EvaluateResult,
+  AstNode,
+} from "./types";
+
+// Definition registrations
+import { registerCoreMacros } from "./definitions/primitives";
+import { registerNamesMacros } from "./definitions/identity";
+import { registerCharacterMacros } from "./definitions/persona-card";
+import { registerChatMacros } from "./definitions/conversation";
+import { registerTimeMacros } from "./definitions/temporal";
+import { registerRandomMacros } from "./definitions/entropy";
+import { registerVariableMacros } from "./definitions/vars";
+import { registerStateMacros } from "./definitions/runtime";
+import { registerReasoningMacros } from "./definitions/cot";
+import { registerLumiaMacros } from "./definitions/lumia";
+import { registerLoomMacros } from "./definitions/loom";
+import { registerMemoryMacros } from "./definitions/memory";
+import { registerCortexMacros } from "./definitions/cortex";
+import { registerStringMacros } from "./definitions/strings";
+import { registerMathMacros } from "./definitions/math";
+import { registerLogicMacros } from "./definitions/logic";
+import { registerFormattingMacros } from "./definitions/formatting";
+import { registerChatUtilsMacros } from "./definitions/chat-utils";
+import { registerRegexRefMacros } from "./definitions/regex-ref";
+import { registerDatabankMacros } from "./definitions/databank";
+import { registerPromptVarMacros } from "./definitions/prompt-vars";
+import { registerMultiplayerMacros } from "./definitions/multiplayer";
+import { registerIterationMacros } from "./definitions/iteration";
+import { registerListMacros } from "./definitions/lists";
+
+let initialized = false;
+
+/**
+ * Register all built-in macros. Safe to call multiple times — only runs once.
+ */
+export function initMacros(): void {
+  if (initialized) return;
+  initialized = true;
+
+  registerCoreMacros();
+  registerNamesMacros();
+  registerCharacterMacros();
+  registerChatMacros();
+  registerTimeMacros();
+  registerRandomMacros();
+  registerVariableMacros();
+  registerStateMacros();
+  registerReasoningMacros();
+  registerLumiaMacros();
+  registerLoomMacros();
+  registerMemoryMacros();
+  registerCortexMacros();
+  registerStringMacros();
+  registerMathMacros();
+  registerLogicMacros();
+  registerFormattingMacros();
+  registerChatUtilsMacros();
+  registerRegexRefMacros();
+  registerDatabankMacros();
+  registerPromptVarMacros();
+  registerMultiplayerMacros();
+  registerIterationMacros();
+  registerListMacros();
+}

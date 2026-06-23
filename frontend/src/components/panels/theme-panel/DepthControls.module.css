@@ -1,0 +1,48 @@
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.label {
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  font-weight: 500;
+  color: var(--lumiverse-text-muted);
+  width: 90px;
+  flex-shrink: 0;
+}
+
+.slider {
+  flex: 1;
+  outline: none;
+}
+
+.slider::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slider-fill, var(--lumiverse-fill-medium));
+}
+
+.slider::-moz-range-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--slider-fill, var(--lumiverse-fill-medium));
+  border: none;
+}
+
+.value {
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 500;
+  color: var(--lumiverse-text-dim);
+  width: 36px;
+  text-align: right;
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+

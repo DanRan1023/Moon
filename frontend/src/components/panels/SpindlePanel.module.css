@@ -1,0 +1,611 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 0;
+}
+
+.installRow {
+  display: flex;
+  gap: 8px;
+}
+
+.addMenuWrap {
+  position: relative;
+}
+
+.installInput {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-fill-subtle);
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text);
+  font-size: calc(13px * var(--lumiverse-font-scale, 1));
+  outline: none;
+  transition: border-color var(--lumiverse-transition-fast);
+}
+
+.installInput:focus {
+  border-color: var(--lumiverse-primary);
+}
+
+.installInput::placeholder {
+  color: var(--lumiverse-text-dim);
+}
+
+.installBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-primary);
+  border: none;
+  color: var(--lumiverse-primary-contrast, #fff);
+  font-size: calc(13px * var(--lumiverse-font-scale, 1));
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity var(--lumiverse-transition-fast);
+}
+
+.addMenu {
+  position: fixed;
+  max-width: calc(calc(100vw / var(--lumiverse-ui-scale, 1)) - 24px);
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--lumiverse-border);
+  background: var(--lumiverse-bg);
+  box-shadow: var(--lumiverse-shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 11000;
+}
+
+.menuActionBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-primary);
+  border: none;
+  color: var(--lumiverse-primary-contrast, #fff);
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.menuActionBtn svg {
+  flex-shrink: 0;
+}
+
+.menuActionBtn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.menuDivider {
+  height: 1px;
+  background: var(--lumiverse-border);
+}
+
+.menuLabel {
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--lumiverse-text-dim);
+}
+
+.installBtn:hover {
+  opacity: 0.9;
+}
+
+.installBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sectionLabel {
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--lumiverse-text-dim);
+}
+
+.listHeaderRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.updateAllBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-fill-subtle);
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text-muted);
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--lumiverse-transition-fast);
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.updateAllBtn:hover:not(:disabled) {
+  color: var(--lumiverse-text);
+  border-color: var(--lumiverse-border-hover);
+  background: var(--lumiverse-fill);
+}
+
+.updateAllBtn:disabled {
+  cursor: wait;
+  color: var(--lumiverse-primary);
+  border-color: var(--lumiverse-primary-020);
+  background: var(--lumiverse-primary-010);
+  opacity: 1;
+}
+
+.importSummary {
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-text-muted);
+}
+
+.extensionList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.extensionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-fill-subtle);
+  border: 1px solid var(--lumiverse-border);
+  container-type: inline-size;
+  container-name: extCard;
+}
+
+.extensionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.extensionInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.extensionName {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: calc(14px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  color: var(--lumiverse-text);
+}
+
+.extensionMeta {
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-text-dim);
+}
+
+.extensionDesc {
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-text-muted);
+  line-height: 1.4;
+}
+
+.extensionActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.githubLink {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--lumiverse-btn-icon);
+  height: var(--lumiverse-btn-icon);
+  border-radius: var(--lumiverse-radius);
+  color: var(--lumiverse-text-muted);
+  transition: color var(--lumiverse-transition-fast);
+}
+
+.githubLink:hover {
+  color: var(--lumiverse-text);
+}
+
+.toggleBtn {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  border: none;
+  cursor: pointer;
+  transition: background var(--lumiverse-transition-fast);
+  flex-shrink: 0;
+}
+
+.toggleBtn::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: white;
+  transition: transform var(--lumiverse-transition-fast);
+}
+
+.toggleOn {
+  background: var(--lumiverse-primary);
+}
+
+.toggleOn::after {
+  transform: translateX(16px);
+}
+
+.toggleOff {
+  background: var(--lumiverse-fill-hover);
+}
+
+.statusDot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--lumiverse-text-dim);
+}
+
+.statusRunning {
+  background: var(--lumiverse-success);
+}
+
+.statusStopped {
+  background: var(--lumiverse-text-dim);
+}
+
+.statusError {
+  background: var(--lumiverse-danger);
+}
+
+.permissions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.permPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 11px;
+  border-radius: 999px;
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition: all var(--lumiverse-transition-fast);
+  border: 1px solid var(--lumiverse-border);
+}
+
+.permPillActive {
+  background: var(--lumiverse-primary-015);
+  color: var(--lumiverse-primary);
+  border-color: var(--lumiverse-primary-020);
+}
+
+.permPillInactive {
+  background: var(--lumiverse-fill);
+  color: var(--lumiverse-text-dim);
+  border-color: var(--lumiverse-border);
+}
+
+.permPill:hover {
+  transform: translateY(-1px);
+}
+
+.permPillInactive:hover {
+  color: var(--lumiverse-text);
+  border-color: var(--lumiverse-border-hover);
+}
+
+.emptyState {
+  text-align: center;
+  padding: 32px 16px;
+  color: var(--lumiverse-text-dim);
+  font-size: calc(13px * var(--lumiverse-font-scale, 1));
+}
+
+.installError {
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-danger);
+  padding: 4px 0;
+}
+
+/* ─── Branch badge on extension cards ─── */
+.branchBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--lumiverse-primary-015);
+  color: var(--lumiverse-primary);
+  font-size: calc(10px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+/* ─── Branch switch dropdown ─── */
+.branchMenu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-fill);
+  border: 1px solid var(--lumiverse-border);
+}
+
+.branchMenuLoading {
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-text-dim);
+  padding: 6px 8px;
+}
+
+.branchMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--lumiverse-radius);
+  background: transparent;
+  border: none;
+  color: var(--lumiverse-text-muted);
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  cursor: pointer;
+  transition: all var(--lumiverse-transition-fast);
+  text-align: left;
+}
+
+.branchMenuItem:hover:not(:disabled) {
+  background: var(--lumiverse-fill-subtle);
+  color: var(--lumiverse-text);
+}
+
+.branchMenuItemCurrent {
+  color: var(--lumiverse-primary);
+  font-weight: 600;
+  cursor: default;
+}
+
+.branchCurrentLabel {
+  margin-left: auto;
+  font-size: calc(10px * var(--lumiverse-font-scale, 1));
+  font-weight: 500;
+  color: var(--lumiverse-text-dim);
+}
+
+.actionBtnActive {
+  background: var(--lumiverse-primary-015);
+  color: var(--lumiverse-primary);
+  border-color: var(--lumiverse-primary-020);
+}
+
+/* ─── Branch select in install menu ─── */
+.branchSelect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.branchSelectLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+  color: var(--lumiverse-text-dim);
+  white-space: nowrap;
+}
+
+.branchSelectInput {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-fill-subtle);
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text);
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  outline: none;
+}
+
+.branchSelectInput:focus {
+  border-color: var(--lumiverse-primary);
+}
+
+.branchFetchHint {
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  color: var(--lumiverse-text-dim);
+}
+
+/* ─── Operation status indicator ─── */
+.operationStatus {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--lumiverse-radius);
+  background: var(--lumiverse-primary-010);
+  color: var(--lumiverse-primary);
+  font-size: calc(11px * var(--lumiverse-font-scale, 1));
+  font-weight: 600;
+}
+
+/* ─── Permission pill toggling state ─── */
+.permPillToggling {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+/* ─── Action row: labeled primaries + small secondary icons ─── */
+.actionRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.primaryActions {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+@container extCard (min-width: 440px) {
+  .primaryActions {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.labeledBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 10px;
+  height: 32px;
+  border-radius: var(--lumiverse-radius);
+  background: transparent;
+  border: 1px solid var(--lumiverse-border);
+  color: var(--lumiverse-text-muted);
+  font-size: calc(12px * var(--lumiverse-font-scale, 1));
+  font-weight: 500;
+  font-family: inherit;
+  letter-spacing: 0.005em;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition:
+    background var(--lumiverse-transition-fast),
+    color var(--lumiverse-transition-fast),
+    border-color var(--lumiverse-transition-fast),
+    transform var(--lumiverse-transition-fast);
+}
+
+.labeledBtn > svg {
+  flex-shrink: 0;
+}
+
+.labeledBtn > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.labeledBtn:hover:not(:disabled) {
+  background: var(--lumiverse-fill-hover);
+  color: var(--lumiverse-text);
+  border-color: var(--lumiverse-border-hover);
+}
+
+.labeledBtn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.labeledBtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.labeledBtnActive,
+.labeledBtnActive:hover:not(:disabled) {
+  background: var(--lumiverse-primary-015);
+  color: var(--lumiverse-primary);
+  border-color: var(--lumiverse-primary-020);
+}
+
+.secondaryActions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-left: 4px;
+  position: relative;
+}
+
+.secondaryActions::before {
+  content: '';
+  position: absolute;
+  left: -2px;
+  top: 6px;
+  bottom: 6px;
+  width: 1px;
+  background: var(--lumiverse-border);
+  opacity: 0.7;
+}
+
+.iconBtnSmall {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  border: none;
+  color: var(--lumiverse-text-dim);
+  cursor: pointer;
+  text-decoration: none;
+  font-family: inherit;
+  transition:
+    background var(--lumiverse-transition-fast),
+    color var(--lumiverse-transition-fast);
+}
+
+.iconBtnSmall:hover:not(:disabled) {
+  color: var(--lumiverse-text);
+  background: var(--lumiverse-fill-hover);
+}
+
+.iconBtnSmall:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.iconBtnDanger:hover:not(:disabled) {
+  color: var(--lumiverse-danger);
+  background: var(--lumiverse-danger-015);
+}

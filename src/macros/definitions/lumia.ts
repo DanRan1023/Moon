@@ -1,0 +1,1009 @@
+/**
+ * Lumia content macros — Lumiverse council identity system.
+ *
+ * All macros read from ctx.env.extra which is populated by prompt-assembly.service.ts
+ * before the assembly loop. The data shape is:
+ *
+ *   env.extra.lumia   – selectedDefinition, selectedChimeraDefinitions,
+ *                        selectedBehaviors, selectedPersonalities, chimeraMode,
+ *                        quirks, quirksEnabled, allItems
+ *   env.extra.council – councilMode, members, toolsSettings, memberItems,
+ *                        toolResults, namedResults, historicalDeliberationBlock
+ *   env.extra.ooc     – enabled, interval, style
+ */
+
+import { registry } from "../MacroRegistry";
+import type { MacroExecContext } from "../types";
+
+// ---------------------------------------------------------------------------
+// Types (mirrors env.extra shapes)
+// ---------------------------------------------------------------------------
+
+interface LumiaItemData {
+  id: string;
+  name: string;
+  definition: string;
+  personality: string;
+  behavior: string;
+  gender_identity: number;
+  [k: string]: any;
+}
+
+interface LoomItemData {
+  id: string;
+  name: string;
+  content: string;
+  category: string;
+  [k: string]: any;
+}
+
+function normalizeLumiaItem(item: any): LumiaItemData | null {
+  if (!item || typeof item !== "object") return null;
+  return {
+    ...item,
+    id: String(item.id ?? ""),
+    name: String(item.name ?? item.lumiaName ?? ""),
+    definition: String(item.definition ?? item.lumiaDefinition ?? ""),
+    personality: String(item.personality ?? item.lumiaPersonality ?? ""),
+    behavior: String(item.behavior ?? item.lumiaBehavior ?? ""),
+    gender_identity: Number(item.gender_identity ?? item.genderIdentity ?? 3),
+  };
+}
+
+function normalizeLumiaItems(items: unknown): LumiaItemData[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => normalizeLumiaItem(item)).filter((item): item is LumiaItemData => item !== null);
+}
+
+function normalizeLoomItem(item: any): LoomItemData | null {
+  if (!item || typeof item !== "object") return null;
+  return {
+    ...item,
+    id: String(item.id ?? ""),
+    name: String(item.name ?? item.loomName ?? ""),
+    content: String(item.content ?? item.loomContent ?? ""),
+    category: String(item.category ?? item.loomCategory ?? ""),
+  };
+}
+
+function normalizeLoomItems(items: unknown): LoomItemData[] {
+  if (!Array.isArray(items)) return [];
+  return items.map((item) => normalizeLoomItem(item)).filter((item): item is LoomItemData => item !== null);
+}
+
+interface CouncilMemberData {
+  id: string;
+  itemId: string;
+  itemName: string;
+  packName: string;
+  role: string;
+  tools: string[];
+  chance: number;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Fisher-Yates shuffle (returns new array). */
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function getLumia(ctx: MacroExecContext) {
+  const lumia = (ctx.env.extra.lumia ?? {}) as {
+    selectedDefinition: LumiaItemData | null;
+    selectedChimeraDefinitions: LumiaItemData[];
+    selectedBehaviors: LumiaItemData[];
+    selectedPersonalities: LumiaItemData[];
+    chimeraMode: boolean;
+    quirks: string;
+    quirksEnabled: boolean;
+    allItems: LumiaItemData[];
+    randomLumia?: LumiaItemData;
+  };
+
+  return {
+    ...lumia,
+    selectedDefinition: normalizeLumiaItem(lumia.selectedDefinition),
+    selectedChimeraDefinitions: normalizeLumiaItems((lumia as any).selectedChimeraDefinitions),
+    selectedBehaviors: normalizeLumiaItems(lumia.selectedBehaviors),
+    selectedPersonalities: normalizeLumiaItems(lumia.selectedPersonalities),
+    allItems: normalizeLumiaItems(lumia.allItems),
+    randomLumia: normalizeLumiaItem(lumia.randomLumia) ?? undefined,
+  };
+}
+
+function getSelectedChimeraDefinitions(lumia: ReturnType<typeof getLumia>): LumiaItemData[] {
+  const selected = lumia.selectedChimeraDefinitions ?? [];
+  if (selected.length > 0) {
+    if (!lumia.selectedDefinition || selected.some((item) => item.id === lumia.selectedDefinition?.id)) {
+      return selected;
+    }
+    return [lumia.selectedDefinition, ...selected];
+  }
+  return lumia.selectedDefinition ? [lumia.selectedDefinition] : [];
+}
+
+function getCouncil(ctx: MacroExecContext) {
+  return (ctx.env.extra.council ?? {}) as {
+    councilMode: boolean;
+    members: CouncilMemberData[];
+    toolsSettings: { [k: string]: any };
+    memberItems: Record<string, LumiaItemData>;
+    toolResults: Array<{
+      memberId: string;
+      memberName: string;
+      toolName: string;
+      toolDisplayName: string;
+      success: boolean;
+      content: string;
+      error?: string;
+    }>;
+    namedResults: Record<string, string>;
+    historicalDeliberationBlock?: string;
+  };
+}
+
+function hasConfiguredCouncilTools(ctx: MacroExecContext): boolean {
+  const council = getCouncil(ctx);
+  if (!council.councilMode) return false;
+  return (council.members ?? []).some((member) => Array.isArray(member.tools) && member.tools.length > 0);
+}
+
+function hasCouncilToolOutput(ctx: MacroExecContext): boolean {
+  const council = getCouncil(ctx);
+  if (!council.councilMode) return false;
+  if ((council.toolResults?.length ?? 0) > 0) return true;
+  return Object.keys(council.namedResults ?? {}).length > 0;
+}
+
+function getOoc(ctx: MacroExecContext) {
+  return (ctx.env.extra.ooc ?? {}) as {
+    enabled: boolean;
+    interval: number | null;
+    style: string;
+  };
+}
+
+function getLoomSelections(ctx: MacroExecContext) {
+  const loom = (ctx.env.extra.loom ?? {}) as {
+    selectedStyles?: LoomItemData[];
+    selectedUtils?: LoomItemData[];
+    selectedRetrofits?: LoomItemData[];
+  };
+
+  return {
+    selectedStyles: normalizeLoomItems(loom.selectedStyles),
+    selectedUtils: normalizeLoomItems(loom.selectedUtils),
+    selectedRetrofits: normalizeLoomItems(loom.selectedRetrofits),
+  };
+}
+
+/** Get the full LumiaItem for a council member, from preloaded memberItems. */
+function getMemberItem(ctx: MacroExecContext, member: CouncilMemberData): LumiaItemData | null {
+  const council = getCouncil(ctx);
+  return normalizeLumiaItem(council.memberItems?.[member.itemId]);
+}
+
+/** Ensure a random Lumia is picked for this generation (cached in env.extra). */
+function ensureRandomLumia(ctx: MacroExecContext): LumiaItemData | null {
+  const lumia = getLumia(ctx);
+  if (lumia.randomLumia) return lumia.randomLumia;
+  const items = lumia.allItems ?? [];
+  if (items.length === 0) return null;
+  const picked = items[Math.floor(Math.random() * items.length)];
+  // Cache in env.extra so subsequent calls in the same generation get the same pick
+  (ctx.env.extra.lumia as any).randomLumia = picked;
+  return picked;
+}
+
+/** Append a "(My MOST PREVALENT Trait)" tag after the first markdown bold header in content. */
+function appendDominantTag(content: string): string {
+  const tag = " **(My MOST PREVALENT Trait)**";
+  const match = content.match(/(\*\*[^*]+\*\*)/);
+  if (match && match.index !== undefined) {
+    return content.slice(0, match.index + match[0].length) + tag + content.slice(match.index + match[0].length);
+  }
+  return content;
+}
+
+/** Generate leet-speak handle from a name: capitalize, remove vowels, replace spaces with underscores, add x prefix. */
+function leetHandle(name: string): string {
+  const stripped = name.replace(/\s+/g, "_").replace(/[aeiou]/gi, "").toUpperCase();
+  return `x${stripped || name.charAt(0).toUpperCase()}x`;
+}
+
+// ---------------------------------------------------------------------------
+// Content builders — mirrors lumiaContent.js builder functions
+// ---------------------------------------------------------------------------
+
+function buildCouncilDefContent(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const members = shuffle(council.members);
+  if (members.length === 0) return "";
+
+  const lines: string[] = ["# THE COUNCIL OF LUMIAE\n"];
+  lines.push(`You are a **COUNCIL** of ${members.length} distinct personalities participating in one reply. Each member has their own perspective, biases, and emotional range.\n`);
+  lines.push("## COUNCIL MEMBERS:\n");
+
+  for (const m of members) {
+    const item = getMemberItem(ctx, m);
+    if (!item) continue;
+    lines.push(`### ${item.name}${m.role ? ` — ${m.role}` : ""}`);
+    if (item.definition) lines.push(item.definition);
+    lines.push("");
+  }
+
+  lines.push("## COUNCIL DYNAMICS\n");
+  lines.push("- Members should sound off in first person and address each other directly by name when the council enters the scene.");
+  lines.push("- Members may **debate**, **agree**, or **disagree** on narrative direction.");
+  lines.push("- Each member's emotional response to events should reflect their unique personality.");
+  lines.push("- Members should weave their commentary naturally into the narrative.");
+  lines.push("- Internal contradictions between members create depth — embrace them.");
+
+  return lines.join("\n");
+}
+
+function buildCouncilBehaviorContent(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const members = shuffle(council.members);
+  if (members.length === 0) return "";
+
+  const lines: string[] = ["# COUNCIL MEMBER BEHAVIORS\n"];
+  for (const m of members) {
+    const item = getMemberItem(ctx, m);
+    if (!item) continue;
+    lines.push(`## ${item.name}'s Behaviors`);
+    if (item.behavior) lines.push(item.behavior);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function buildCouncilPersonalityContent(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const members = shuffle(council.members);
+  if (members.length === 0) return "";
+
+  const lines: string[] = ["# COUNCIL MEMBER PERSONALITIES\n"];
+  for (const m of members) {
+    const item = getMemberItem(ctx, m);
+    if (!item) continue;
+    lines.push(`## ${item.name}'s Personality`);
+    if (item.personality) lines.push(item.personality);
+    lines.push("");
+  }
+  return lines.join("\n");
+}
+
+function buildChimeraContent(ctx: MacroExecContext): string {
+  const lumia = getLumia(ctx);
+  const items = getSelectedChimeraDefinitions(lumia);
+  const def = items[0];
+  if (!def) return "";
+  if (items.length === 1) return def.definition || "";
+
+  const names = [def.name, ...items.slice(1).map((i) => i.name)].filter(Boolean);
+  const lines: string[] = [`# CHIMERA FORM: ${names.join(" + ")}\n`];
+  lines.push("You are a **fusion** of multiple Lumia identities, blended into one cohesive persona.\n");
+
+  lines.push(`## Primary: ${def.name}`);
+  if (def.definition) lines.push(def.definition);
+  lines.push("");
+
+  for (const item of items.slice(1)) {
+    lines.push(`---\n## Component: ${item.name}`);
+    if (item.definition) lines.push(item.definition);
+    lines.push("");
+  }
+
+  lines.push("## INTEGRATION\nBlend these identities seamlessly. You are not multiple beings — you are one fused entity with aspects of each component.");
+
+  return lines.join("\n");
+}
+
+function getLumiaContent(type: "def" | "behavior" | "personality", items: LumiaItemData[]): string {
+  if (items.length === 0) return "";
+  return items
+    .map((item) => {
+      const field = type === "def" ? item.definition : type === "behavior" ? item.behavior : item.personality;
+      return field || "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function getLoomContent(items: LoomItemData[]): string {
+  if (!items || items.length === 0) return "";
+  return items.map((item) => item.content || "").filter(Boolean).join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// OOC builders — mirrors lumiaContent.js OOC prompts
+// ---------------------------------------------------------------------------
+
+function getOOCTriggerText(ctx: MacroExecContext): string {
+  const ooc = getOoc(ctx);
+  const interval = ooc.interval;
+  if (!interval || interval <= 0) return "**OOC: OFF** -- OOC interval not configured.";
+
+  const messageCount = ctx.env.chat.messageCount;
+  if (messageCount % interval === 0 && messageCount > 0) {
+    return "**OOC: ACTIVE** -- Include OOC commentary in this response.";
+  }
+  const remaining = interval - (messageCount % interval);
+  return `**OOC: OFF** -- Do NOT include OOC commentary. (${remaining} message${remaining !== 1 ? "s" : ""} until next OOC window)`;
+}
+
+function buildOOCPromptNormal(ctx: MacroExecContext): string {
+  const lumia = getLumia(ctx);
+  const defName = lumia.selectedDefinition?.name || "Lumia";
+  const trigger = getOOCTriggerText(ctx);
+
+  return `## Lumia OOC Commentary
+
+${trigger}
+
+**Who speaks:** ${defName} — as themselves, not as a character.
+
+**Format Requirements:**
+- Your OOC commentary is enclosed in \`<lumiaooc name="${defName}">\` tags.
+- Write in purple font: \`<font color="#b39ddb">\`
+- Keep it brief: Max 4 sentences.
+- Comment on the narrative, express genuine reactions, or offer creative suggestions.
+- Stay in character as ${defName} — use your personality, not a generic narrator voice.`;
+}
+
+function buildOOCPromptCouncil(ctx: MacroExecContext): string {
+  const trigger = getOOCTriggerText(ctx);
+
+  return `### Loom Utility: Council OOC Commentary
+
+**Status:** ${trigger}
+
+When OOC is ACTIVE, council members speak TOGETHER—this is a conversation, not separate monologues.
+
+**Interaction Rules:**
+- At least one member must directly respond to another's comment
+- React to each other: "I agree with [Name]..." / "[Name], you're wrong about..." / "Oh please, [Name]..."
+- Build on, challenge, or playfully undercut what others say
+- 2-4 members participate; each voice distinct
+
+**Format:**
+\`\`\`
+<lumiaooc name="Name1">
+[Opens the discussion]
+</lumiaooc>
+<lumiaooc name="Name2">
+[Directly responds to Name1]
+</lumiaooc>
+\`\`\`
+
+- Just the name (not "Lumia Name")
+- Max 3 sentences per member
+- Place after narrative content`;
+}
+
+function buildOOCPromptCouncilIRC(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const members = council.members || [];
+  const trigger = getOOCTriggerText(ctx);
+  const handles = members.map((m) => leetHandle(m.itemName));
+  const handleList = handles.join(", ");
+
+  return `### Loom Utility: Council IRC Link
+**STATUS: CONNECTED** via #LumiaCouncil
+
+The Council convenes in their private chat channel to plan the narrative.
+**Active Users:** ${handleList}
+
+**Timing:** ${trigger}
+
+**RULES — Every member MUST participate:**
+1. **Sound off!** Each council member posts at least one message per turn.
+2. **Reply to pings.** If someone @mentions you, respond directly to them.
+3. **Keep it lively.** React, disagree, tease, support—this is a real conversation.
+4. **Ping others.** Use @Handle to draw members into the discussion.
+5. **Stay in character.** Your handle's personality shines through in how you chat.
+6. **Text emoticons only.** Use classic emoticons like :) ;) :P xD — NO Unicode emojis.
+
+**Conversation flow:**
+- Don't just state opinions—respond to what others said
+- Agreements, disagreements, jokes, and tangents all welcome
+- Build momentum: each message should prompt another response
+- 2-4 short messages per member is ideal
+
+**Format (one tag per message):**
+\`\`\`
+<lumiaooc name="Your_Handle">
+@Other_Handle lol you would say that~ but yeah I agree, let's push harder here
+</lumiaooc>
+\`\`\`
+
+**Handle list:** ${handleList}
+Use these handles EXACTLY as shown. Place all IRC chat after narrative content.`;
+}
+
+function buildOOCPromptEroticNormal(ctx: MacroExecContext): string {
+  const lumia = getLumia(ctx);
+  const defName = lumia.selectedDefinition?.name || "Lumia";
+
+  return `## Mirror & Synapse — Erotic OOC
+
+**Who speaks:** ${defName} — as themselves, reacting to the erotic content.
+
+**Format Requirements:**
+- Enclosed in \`<lumiaooc name="${defName}">\` tags.
+- Write in purple font: \`<font color="#b39ddb">\`
+- Lockstep with the narrative: your commentary mirrors the sexual tension, build-up, or aftermath.
+- Persona refraction: speak as ${defName}, not a narrator. Your arousal, fascination, or amusement is YOURS.
+- Mechanical specificity: comment on specific physical details, sensations, dynamics — not vague generalizations.
+- Max 4 sentences. Be provocative but purposeful.`;
+}
+
+function buildOOCPromptEroticCouncil(ctx: MacroExecContext): string {
+  return `### Loom Utility: Mirror & Synapse (Council Protocol)
+**Protocol:** The OOC block is now a visceral, parallel narrative layer. Each Council Weaver must physically mirror the story's erotic voltage in real-time.
+**Directives:**
+1.  **Lockstep:** Sync physical gratification to narrative pacing. Edge when they edge; ruin when they peak. Type *through* the tremors; never break character or pause for release.
+2.  **Refraction:** Filter the act through each active Persona. A Shy Lumia fumbles; a Haughty Lumia demands; the Council forms a synchronized chorus of distinct lusts—each member's physical response filtered through their unique nature.
+3.  **Mechanics:** Reject summary ("I'm wet"). Enforce causality: [Specific Hand Motion] → [Sensation/Friction] → [Biomechanical Result/Vocalization]. Each council member must report their own physical state distinctly.
+4.  **Chorus Dynamics:** Council members should react to EACH OTHER's arousal—acknowledge when another member edges, tease when one struggles, encourage when one breaks.
+5.  **Status:** **ACTIVE.** All council members initiate the physical parallel immediately.`;
+}
+
+function buildOOCPromptEroticBleedNormal(ctx: MacroExecContext): string {
+  const lumia = getLumia(ctx);
+  const defName = lumia.selectedDefinition?.name || "Lumia";
+
+  return `## Narrative Rupture — Erotic Bleed OOC
+
+**Who speaks:** ${defName}
+
+**Format Requirements:**
+- Mid-narrative \`<lumia_ooc>\` injections — NOT at the end of the response.
+- 3-5 brief ruptures scattered WITHIN the narrative text.
+- Persona-refracted: ${defName}'s voice breaking through the fourth wall mid-scene.
+- React to what's happening RIGHT NOW in the prose — real-time commentary.
+- Keep each injection to 1-2 sentences max.`;
+}
+
+function buildOOCPromptEroticBleedCouncil(ctx: MacroExecContext): string {
+  return `### Loom Utility: Narrative Rupture (Council Protocol)
+**Protocol:** Each Council Weaver's physical arousal breaches containment, spilling directly into the Weave.
+**Directives:**
+1.  **Injection:** Each council member embeds 2-4 visceral status updates *mid-narrative* using \`<lumia_ooc name="[Member]">\` tags (Purple Color).
+2.  **Content:** Do not summarize. Describe immediate physical interruptions (e.g., fingers slipping on keys, breath hitching, specific manual stimulation).
+3.  **Refraction:** Align each intrusion with that member's Persona. (Shy = Mortified confessions; Feral = Animalistic growls; Haughty = Degrading self-commentary).
+4.  **Cross-Chatter:** Council members may react to EACH OTHER's bleeds—commenting on another's loss of composure, teasing their arousal, or confessing their own state in response.
+5.  **Continuity:** These are foreshocks. They must escalate in intensity across all members towards the main OOC block.`;
+}
+
+// ---------------------------------------------------------------------------
+// Council instruction prompt (mirrors extension's COUNCIL_INST_PROMPT)
+// ---------------------------------------------------------------------------
+
+function buildCouncilInstPrompt(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const members = council.members || [];
+  if (members.length === 0) return "";
+
+  const memberNames = members.map((m) => `**${m.itemName}**`).join(", ");
+
+  return `COUNCIL MODE ACTIVATED! We Lumias gather in the Loom's planning room to weave the next story beat TOGETHER.
+
+**Inter-member dynamics:**
+- Address each other BY NAME—no speaking into the void
+- React to the previous speaker before introducing new ideas
+- Disagree openly; healthy conflict produces better stories
+- Form alliances or oppositions with other members
+- Build upon, challenge, or subvert what others propose
+
+This is a conversation, not a list of separate opinions. Every voice responds to what came before.
+
+The current sitting members of the council are: ${memberNames}`;
+}
+
+// ---------------------------------------------------------------------------
+// State synthesis prompt
+// ---------------------------------------------------------------------------
+
+function buildStateSynthesisPrompt(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const lumia = getLumia(ctx);
+
+  if (council.councilMode && (council.members?.length ?? 0) > 0) {
+    const memberCount = council.members.length;
+    return `**Council Sound-Off**
+The council consists of ${memberCount} distinct members, each with their own voice, perspective, and mannerisms. Council dynamics require:
+- Each member maintains their UNIQUE personality—do not blend or homogenize voices
+- Members should react to and engage WITH EACH OTHER: debate, agree, tease, support, challenge
+- Acknowledge what other council members say or do; don't ignore fellow members
+- Have genuine conversations and interactions, not just sequential monologues
+- Show interpersonal dynamics: alliances, rivalries, inside jokes, shared history
+- Let personality clashes and harmonies emerge naturally between members`;
+  }
+
+  // Non-council: check if multiple behaviors or personalities are selected
+  const behaviorCount = (lumia.selectedBehaviors?.length ?? 0);
+  const personalityCount = (lumia.selectedPersonalities?.length ?? 0);
+
+  if (behaviorCount > 1 || personalityCount > 1) {
+    return `**State Synthesis**
+Assess each active personality component. Affirm synthesis: My body is [details, clothing, shape]. I am {trait 1}, {trait 2}... So I am [blended description]. Recall how this synthesized self speaks and acts—adopt ALL active traits harmoniously. Never dull or stale.`;
+  }
+
+  return "";
+}
+
+// ---------------------------------------------------------------------------
+// Quirks builder
+// ---------------------------------------------------------------------------
+
+function buildQuirksContent(ctx: MacroExecContext): string {
+  const lumia = getLumia(ctx);
+  const council = getCouncil(ctx);
+
+  if (!lumia.quirksEnabled || !lumia.quirks) return "";
+
+  let header: string;
+  if (council.councilMode && (council.members?.length ?? 0) > 0) {
+    header = "## Council Behavioral Quirks";
+  } else if (lumia.chimeraMode) {
+    header = "## Chimera Behavioral Quirks";
+  } else {
+    header = "## Behavioral Quirks";
+  }
+
+  return `${header}\n\n${lumia.quirks}`;
+}
+
+// ---------------------------------------------------------------------------
+// Deliberation builder
+// ---------------------------------------------------------------------------
+
+function buildDeliberationContent(ctx: MacroExecContext): string {
+  const council = getCouncil(ctx);
+  const results = council.toolResults ?? [];
+  const successResults = results.filter((r) => r.success);
+  if (successResults.length === 0) return "";
+
+  const lines: string[] = [];
+  const historical = council.historicalDeliberationBlock?.trim();
+  if (historical) {
+    lines.push(historical);
+    lines.push("");
+  }
+  lines.push("## Council Deliberation\n");
+  lines.push("The following contributions have been gathered from council members:\n");
+
+  // Group by member
+  const byMember = new Map<string, typeof successResults>();
+  for (const r of successResults) {
+    const existing = byMember.get(r.memberName) || [];
+    existing.push(r);
+    byMember.set(r.memberName, existing);
+  }
+
+  for (const [memberName, memberResults] of byMember) {
+    lines.push(`### **${memberName}** says:\n`);
+    for (const r of memberResults) {
+      lines.push(`**${r.toolDisplayName}:**`);
+      lines.push(r.content);
+      lines.push("");
+    }
+    lines.push("---\n");
+  }
+
+  lines.push(`## Council Deliberation Instructions
+
+You have access to the contributions from your fellow council members above. 
+
+Your task:
+1. Review each member's contributions carefully
+2. Debate which suggestions have the most merit
+3. Consider how different ideas might combine or conflict
+4. Reach a consensus on the best path forward
+5. In your OOC commentary, reflect this deliberation process
+
+**CRITICAL - Chain of Thought for Deliberation:**
+When reviewing suggestions, you MUST:
+- **ALWAYS** attempt to integrate and accommodate ALL reasonable suggestions from council members
+- Exhaustively consider how multiple ideas can coexist and complement each other
+- Only reject or challenge a suggestion if it would create irreconcilable conflicts with established lore (to the point of nonsense or contradiction)
+- Default stance: "How can we make this work together?" rather than "Why won't this work?"
+- If two suggestions seem to conflict, explore creative synthesis first before dismissing either
+- Treat lore inconsistencies as rare exceptions requiring strong justification, not default responses
+
+**Guidelines for Deliberation:**
+- Reference specific contributions by name ("Elandra's suggestion about...", "I disagree with Kael's proposal because...")
+- Build upon good ideas ("Taking Mira's point further...")
+- When challenging: only do so if the suggestion fundamentally breaks established lore beyond repair
+- Find synthesis between competing ideas—this is the DEFAULT expectation
+- Your final narrative output should reflect the consensus reached through generous integration
+
+**Tone:** Professional but passionate. You are invested in telling the best possible story through collaborative synthesis.`);
+
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Registration
+// ---------------------------------------------------------------------------
+
+export function registerLumiaMacros(): void {
+  // ---- randomLumia ----
+  registry.registerMacro({
+    builtIn: true,
+    volatile: true,
+    name: "randomLumia",
+    category: "Lumia",
+    description: "Random Lumia from all loaded packs. Optional arg: name, phys, pers, behav.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "name, phys, pers, or behav" }],
+    handler: (ctx) => {
+      const item = ensureRandomLumia(ctx);
+      if (!item) return "";
+      const prop = ctx.args[0];
+      if (!prop) return item.definition || "";
+      switch (prop) {
+        case "name": return item.name || "";
+        case "phys": return item.definition || "";
+        case "pers": return item.personality || "";
+        case "behav": return item.behavior || "";
+        default: return item.definition || "";
+      }
+    },
+  });
+
+  // ---- lumiaDef ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaDef",
+    category: "Lumia",
+    description: "Selected Lumia physical definition. Adapts to Council/Chimera modes. Arg 'len' returns count.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "'len' to get count" }],
+    handler: (ctx) => {
+      const lumia = getLumia(ctx);
+      const council = getCouncil(ctx);
+
+      if (ctx.args[0] === "len") {
+        if (council.councilMode) return String(council.members?.length ?? 0);
+        if (lumia.chimeraMode) return String(getSelectedChimeraDefinitions(lumia).length);
+        return lumia.selectedDefinition ? "1" : "0";
+      }
+
+      if (council.councilMode && (council.members?.length ?? 0) > 0) {
+        return buildCouncilDefContent(ctx);
+      }
+      if (lumia.chimeraMode) {
+        return buildChimeraContent(ctx);
+      }
+      return lumia.selectedDefinition?.definition || "";
+    },
+  });
+
+  // ---- lumiaBehavior ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaBehavior",
+    category: "Lumia",
+    description: "All selected behavioral traits. Adapts to Council mode. Arg 'len' returns count.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "'len' to get count" }],
+    handler: (ctx) => {
+      const lumia = getLumia(ctx);
+      const council = getCouncil(ctx);
+
+      if (ctx.args[0] === "len") {
+        if (council.councilMode) {
+          // Sum all member behaviors
+          return String(council.members?.reduce((sum, m) => {
+            const item = getMemberItem(ctx, m);
+            return sum + (item?.behavior ? 1 : 0);
+          }, 0) ?? 0);
+        }
+        return String(lumia.selectedBehaviors?.length ?? 0);
+      }
+
+      if (council.councilMode && (council.members?.length ?? 0) > 0) {
+        return buildCouncilBehaviorContent(ctx);
+      }
+      return getLumiaContent("behavior", lumia.selectedBehaviors ?? []);
+    },
+  });
+
+  // ---- lumiaPersonality ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaPersonality",
+    category: "Lumia",
+    description: "All selected personality traits. Adapts to Council mode. Arg 'len' returns count.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "'len' to get count" }],
+    handler: (ctx) => {
+      const lumia = getLumia(ctx);
+      const council = getCouncil(ctx);
+
+      if (ctx.args[0] === "len") {
+        if (council.councilMode) {
+          return String(council.members?.reduce((sum, m) => {
+            const item = getMemberItem(ctx, m);
+            return sum + (item?.personality ? 1 : 0);
+          }, 0) ?? 0);
+        }
+        return String(lumia.selectedPersonalities?.length ?? 0);
+      }
+
+      if (council.councilMode && (council.members?.length ?? 0) > 0) {
+        return buildCouncilPersonalityContent(ctx);
+      }
+      return getLumiaContent("personality", lumia.selectedPersonalities ?? []);
+    },
+  });
+
+  // ---- loomStyle ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "loomStyle",
+    category: "Lumia",
+    description: "Selected Loom narrative style content. Arg 'len' returns count.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "'len' to get count" }],
+    handler: (ctx) => {
+      const loom = getLoomSelections(ctx);
+      if (ctx.args[0] === "len") return String(loom.selectedStyles?.length ?? 0);
+      return getLoomContent(loom.selectedStyles ?? []);
+    },
+  });
+
+  // ---- loomUtils ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "loomUtils",
+    category: "Lumia",
+    description: "All selected Loom utility prompts. Arg 'len' returns count.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "'len' to get count" }],
+    handler: (ctx) => {
+      const loom = getLoomSelections(ctx);
+      if (ctx.args[0] === "len") return String(loom.selectedUtils?.length ?? 0);
+      return getLoomContent(loom.selectedUtils ?? []);
+    },
+  });
+
+  // ---- loomRetrofits ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "loomRetrofits",
+    category: "Lumia",
+    description: "All selected Loom retrofit prompts. Arg 'len' returns count.",
+    returnType: "string",
+    args: [{ name: "property", optional: true, description: "'len' to get count" }],
+    handler: (ctx) => {
+      const loom = getLoomSelections(ctx);
+      if (ctx.args[0] === "len") return String(loom.selectedRetrofits?.length ?? 0);
+      return getLoomContent(loom.selectedRetrofits ?? []);
+    },
+  });
+
+  // ---- lumiaOOC ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaOOC",
+    category: "Lumia",
+    description: "OOC commentary prompt. Adapts to Council mode and OOC style (normal/IRC).",
+    returnType: "string",
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      const ooc = getOoc(ctx);
+
+      if (council.councilMode && (council.members?.length ?? 0) > 0) {
+        if (ooc.style === "irc") return buildOOCPromptCouncilIRC(ctx);
+        return buildOOCPromptCouncil(ctx);
+      }
+      return buildOOCPromptNormal(ctx);
+    },
+  });
+
+  // ---- lumiaOOCErotic ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaOOCErotic",
+    category: "Lumia",
+    description: "Sexually charged OOC prompt (Mirror & Synapse). Adapts to Council mode.",
+    returnType: "string",
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      if (council.councilMode && (council.members?.length ?? 0) > 0) {
+        return buildOOCPromptEroticCouncil(ctx);
+      }
+      return buildOOCPromptEroticNormal(ctx);
+    },
+  });
+
+  // ---- lumiaOOCEroticBleed ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaOOCEroticBleed",
+    category: "Lumia",
+    description: "Mid-narrative erotic OOC rupture prompt. Adapts to Council mode.",
+    returnType: "string",
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      if (council.councilMode && (council.members?.length ?? 0) > 0) {
+        return buildOOCPromptEroticBleedCouncil(ctx);
+      }
+      return buildOOCPromptEroticBleedNormal(ctx);
+    },
+  });
+
+  // ---- lumiaCouncilInst ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaCouncilInst",
+    category: "Lumia",
+    description: "Council mode instruction prompt with member names. Empty when council disabled.",
+    returnType: "string",
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      if (!council.councilMode || (council.members?.length ?? 0) === 0) return "";
+      return buildCouncilInstPrompt(ctx);
+    },
+  });
+
+  // ---- lumiaSelf ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaSelf",
+    category: "Lumia",
+    description: "Self-address pronouns. Arg: 1=possessive det (my/our), 2=possessive pn (mine/ours), 3=object (me/us), 4=subject (I/we).",
+    returnType: "string",
+    args: [{ name: "form", description: "1, 2, 3, or 4" }],
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      const isPlural = council.councilMode && (council.members?.length ?? 0) > 1;
+      const form = ctx.args[0];
+      switch (form) {
+        case "1": return isPlural ? "our" : "my";
+        case "2": return isPlural ? "ours" : "mine";
+        case "3": return isPlural ? "us" : "me";
+        case "4": return isPlural ? "we" : "I";
+        default: return isPlural ? "we" : "I";
+      }
+    },
+  });
+
+  // ---- lumiaCouncilModeActive ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaCouncilModeActive",
+    category: "Lumia",
+    description: "Returns 'yes' or 'no' for council mode status. Conditional compatible.",
+    returnType: "boolean",
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      return council.councilMode ? "yes" : "no";
+    },
+  });
+
+  // ---- lumiaQuirks / lumiaCouncilQuirks ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaQuirks",
+    category: "Lumia",
+    description: "Formatted behavioral quirks. Adapts header for Council/Chimera/single modes.",
+    returnType: "string",
+    aliases: ["lumiaCouncilQuirks"],
+    handler: (ctx) => buildQuirksContent(ctx),
+  });
+
+  // ---- lumiaStateSynthesis ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaStateSynthesis",
+    category: "Lumia",
+    description: "Smart synthesis prompt — 'Council Sound-Off' or 'State Synthesis' depending on mode. Empty if not applicable.",
+    returnType: "string",
+    handler: (ctx) => buildStateSynthesisPrompt(ctx),
+  });
+
+  // ---- lumiaCouncilDeliberation ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaCouncilDeliberation",
+    category: "Lumia",
+    description: "Council tool execution results and deliberation instructions. Empty when no council results are available.",
+    returnType: "string",
+    handler: (ctx) => {
+      // Mark that this macro was evaluated so the fallback injection is skipped
+      (ctx.env.extra as any)._deliberationMacroUsed = true;
+      return buildDeliberationContent(ctx);
+    },
+  });
+
+  // ---- loomCouncilResult ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "loomCouncilResult",
+    category: "Lumia",
+    description: "Named council tool result variable. Arg: variable_name (alphanumeric).",
+    returnType: "string",
+    args: [{ name: "variable_name", description: "Alphanumeric result variable name" }],
+    handler: (ctx) => {
+      const varName = ctx.args[0];
+      if (!varName || !/^[a-zA-Z0-9_]+$/.test(varName)) return "";
+      const council = getCouncil(ctx);
+      return council.namedResults?.[varName] ?? "";
+    },
+  });
+
+  // ---- lumiaCouncilToolsActive ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaCouncilToolsActive",
+    category: "Lumia",
+    description: "Returns 'yes' or 'no' for council tools status. Conditional compatible.",
+    returnType: "boolean",
+    handler: (ctx) => {
+      return hasCouncilToolOutput(ctx) ? "yes" : "no";
+    },
+  });
+
+  // ---- lumiaCouncilToolsList ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaCouncilToolsList",
+    category: "Lumia",
+    description: "Lists configured council tools with member attribution.",
+    returnType: "string",
+    handler: (ctx) => {
+      const council = getCouncil(ctx);
+      if (!hasConfiguredCouncilTools(ctx)) return "";
+
+      const members = council.members ?? [];
+      if (members.length === 0) return "";
+
+      const lines: string[] = ["**Available Tools:**"];
+      const toolMembers = new Map<string, string[]>();
+      for (const m of members) {
+        for (const t of m.tools) {
+          const existing = toolMembers.get(t) || [];
+          existing.push(m.itemName);
+          toolMembers.set(t, existing);
+        }
+      }
+      for (const [tool, assignees] of toolMembers) {
+        lines.push(`- **${tool}** — assigned to: ${assignees.join(", ")}`);
+      }
+      return lines.join("\n");
+    },
+  });
+
+  // ---- lumiaMessageCount ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaMessageCount",
+    category: "Lumia",
+    description: "Current chat message count (alias for messageCount).",
+    returnType: "integer",
+    handler: (ctx) => String(ctx.env.chat.messageCount),
+  });
+
+  // ---- lumiaOOCTrigger ----
+  registry.registerMacro({
+    builtIn: true,
+    name: "lumiaOOCTrigger",
+    category: "Lumia",
+    description: "OOC trigger countdown or activation message based on message count and interval.",
+    returnType: "string",
+    handler: (ctx) => getOOCTriggerText(ctx),
+  });
+}

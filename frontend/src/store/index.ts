@@ -1,0 +1,76 @@
+import { create } from 'zustand'
+import type { AppStore } from '@/types/store'
+import { createChatSlice } from './slices/chat'
+import { createCharactersSlice } from './slices/characters'
+import { createPersonasSlice } from './slices/personas'
+import { createUISlice } from './slices/ui'
+import { createSettingsSlice } from './slices/settings'
+import { createPresetsSlice } from './slices/presets'
+import { createLumiSlice } from './slices/lumi'
+import { createConnectionsSlice } from './slices/connections'
+import { createPacksSlice } from './slices/packs'
+import { createCouncilSlice } from './slices/council'
+import { createGenerationSlice } from './slices/generation'
+import { createSummarySlice } from './slices/summary'
+import { createSpindleSlice } from './slices/spindle'
+import { createAuthSlice } from './slices/auth'
+import { createWorldInfoSlice } from './slices/world-info'
+import { createGroupChatSlice } from './slices/group-chat'
+import { createMultiplayerSlice } from './slices/multiplayer'
+import { createSpindlePlacementSlice } from './slices/spindle-placement'
+import { createPromptBreakdownSlice } from './slices/prompt-breakdown'
+import { createRegexSlice } from './slices/regex'
+import { createExpressionSlice } from './slices/expressions'
+import { createImageGenConnectionsSlice } from './slices/image-gen-connections'
+import { createSttConnectionsSlice } from './slices/stt-connections'
+import { createTtsConnectionsSlice } from './slices/tts-connections'
+import { createMcpServersSlice } from './slices/mcp-servers'
+import { createLoadoutsSlice } from './slices/loadouts'
+import { createMigrationSlice } from './slices/migration'
+import { createOperatorSlice } from './slices/operator'
+import { createFloatingAvatarSlice } from './slices/floating-avatar'
+import { createChatHeadsSlice } from './slices/chat-heads'
+import { createDatabankSlice } from './slices/databank'
+import { createConnectionSlice } from './slices/connection'
+import { createWeaverSlice } from './slices/weaver'
+import { createContainersSlice } from './slices/containers'
+import { registerUserScopedResetStore } from './user-scoped-reset'
+
+export const useStore = create<AppStore>()((...a) => ({
+  ...createChatSlice(...a),
+  ...createCharactersSlice(...a),
+  ...createPersonasSlice(...a),
+  ...createUISlice(...a),
+  ...createSettingsSlice(...a),
+  ...createPresetsSlice(...a),
+  ...createLumiSlice(...a),
+  ...createConnectionsSlice(...a),
+  ...createPacksSlice(...a),
+  ...createCouncilSlice(...a),
+  ...createGenerationSlice(...a),
+  ...createSummarySlice(...a),
+  ...createSpindleSlice(...a),
+  ...createAuthSlice(...a),
+  ...createWorldInfoSlice(...a),
+  ...createGroupChatSlice(...a),
+  ...createMultiplayerSlice(...a),
+  ...createSpindlePlacementSlice(...a),
+  ...createPromptBreakdownSlice(...a),
+  ...createRegexSlice(...a),
+  ...createExpressionSlice(...a),
+  ...createImageGenConnectionsSlice(...a),
+  ...createSttConnectionsSlice(...a),
+  ...createTtsConnectionsSlice(...a),
+  ...createMcpServersSlice(...a),
+  ...createLoadoutsSlice(...a),
+  ...createMigrationSlice(...a),
+  ...createOperatorSlice(...a),
+  ...createFloatingAvatarSlice(...a),
+  ...createChatHeadsSlice(...a),
+  ...createDatabankSlice(...a),
+  ...createConnectionSlice(...a),
+  ...createWeaverSlice(...a),
+  ...createContainersSlice(...a),
+}))
+
+registerUserScopedResetStore(useStore, useStore.getState())

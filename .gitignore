@@ -1,0 +1,80 @@
+# Local-only tooling (i18n generators, caches, audits — not shipped with the app)
+frontend/local/
+frontend/scripts/.translate-cache-*.json
+
+# Dependencies
+# NOTE: bun.lock (root + frontend) is intentionally COMMITTED, not ignored.
+# Without it the Docker build re-resolves caret ranges fresh on every build,
+# which drifted better-auth/kysely into an incompatible combo (kysely 0.29
+# moved DEFAULT_MIGRATION_LOCK_TABLE out of its root export) and crashed
+# startup. Keep the lockfile tracked so every environment installs the same tree.
+node_modules/
+.claude/
+vendor/lancedb-android/upstream/
+vendor/lancedb-android/build/
+vendor/lancedb-android/out/
+
+# =============================================================================
+# User instance data — NEVER commit these
+# =============================================================================
+
+# Main data directory (databases, uploads, avatars, extensions, etc.)
+data/
+
+# SQLite databases (catch any outside data/)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# =============================================================================
+# Secrets & environment
+# =============================================================================
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Keep the example for reference
+!.env.example
+
+# =============================================================================
+# OS / editor
+# =============================================================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# =============================================================================
+# Generated
+# =============================================================================
+frontend/src/lib/generatedComponentProps.ts
+frontend/src/lib/generatedCssVariables.ts
+frontend/src/lib/generatedComponentCss.ts
+*.tsbuildinfo
+
+# =============================================================================
+# Zensical docs build output
+# =============================================================================
+
+*.md
+!developer-docs/**/*.md
+!user-docs/**/*.md
+
+!LICENSE.md
+!README.md
+!SECURITY.md
+scripts/release.sh
+scripts/release-main.sh
+scripts/release-rc.sh
+scripts/push-staging.sh
+src/macros/macros.test.ts
+vendor/
+scripts/build-lancedb-android.sh
