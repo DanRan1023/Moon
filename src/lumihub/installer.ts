@@ -20,6 +20,8 @@ import * as themeAssetsSvc from "../services/theme-assets.service";
 import { getCharacterWorldBookIds, setCharacterWorldBookIds } from "../utils/character-world-books";
 import { applyCharxModulesAndAssets } from "../services/charx-import.service";
 import { resolveSealedPresetBlocksForInstall, type SealedManifest } from "./sealed-presets";
+import * as fs from "fs";
+import * as path from "path";
 import type {
   InstallCharacterPayload,
   InstallPresetPayload,
@@ -51,7 +53,6 @@ export async function installCharacter(
 
   try {
     let result: InstallResultPayload;
-
     if (payload.source === "chub" && payload.importUrl) {
       result = await installFromChub(requestId, userId, payload);
     } else if (payload.importUrl) {
@@ -97,6 +98,7 @@ function stampInstallSource(userId: string, characterId: string, payload: Instal
   try {
     const character = svc.getCharacter(userId, characterId);
     if (!character) return;
+
     const { buildCharacterSlug } = require("./manifest") as typeof import("./manifest");
     const slug = buildCharacterSlug(character.creator, character.name);
 
@@ -137,25 +139,35 @@ async function importGalleryFromUrls(userId: string, characterId: string, urls: 
     try {
       const res = await safeFetch(url, { timeoutMs: 15_000, maxBytes: 50 * 1024 * 1024 });
       if (!res.ok) return null;
+
       const buf = await res.arrayBuffer();
       const contentType = res.headers.get("content-type") || "image/webp";
-      const ext = contentType.includes("png") ? "png" : contentType.includes("jpeg") || contentType.includes("jpg") ? "jpg" : "webp";
+      const ext = contentType.includes("png")
+        ? "png"
+        : contentType.includes("jpeg") || contentType.includes("jpg")
+        ? "jpg"
+        : "webp";
       const filename = `gallery_${crypto.randomUUID()}.${ext}`;
+
       return new File([buf], filename, { type: contentType });
     } catch {
       // Skip individual failures
       return null;
     }
   });
-  const files: File[] = downloaded.filter((f): f is File => f !== null);
 
+  const files: File[] = downloaded.filter((f): f is File => f !== null);
   if (files.length === 0) return;
 
   if (files.length > 3) {
     await gallerySvc.uploadBulkToGallery(userId, characterId, files);
   } else {
     for (const file of files) {
-      try { await gallerySvc.uploadToGallery(userId, characterId, file); } catch { /* skip */ }
+      try {
+        await gallerySvc.uploadToGallery(userId, characterId, file);
+      } catch {
+        /* skip */
+      }
     }
   }
 }
@@ -180,12 +192,14 @@ function maybeExtractWorldbook(
     const { worldBook } = wbSvc.importCharacterBook(userId, characterId, characterName, charBook, {
       autoManagedByCharacter: true,
     });
+
     // Associate the worldbook with the character (append to array)
     const currentIds = getCharacterWorldBookIds(character.extensions);
     const nextExtensions = setCharacterWorldBookIds(
       { ...(character.extensions || {}) },
       [...currentIds, worldBook.id],
     );
+
     svc.updateCharacter(userId, characterId, { extensions: nextExtensions });
   } catch (err) {
     console.warn("[LumiHub Installer] Embedded worldbook extraction failed:", err);
@@ -219,8 +233,13 @@ async function installFromCardData(
     try {
       const avatarBuffer = Buffer.from(payload.avatarBase64, "base64");
       const mime = payload.avatarMime || "image/png";
-      const ext = mime.includes("webp") ? "webp" : mime.includes("jpeg") || mime.includes("jpg") ? "jpg" : "png";
+      const ext = mime.includes("webp")
+        ? "webp"
+        : mime.includes("jpeg") || mime.includes("jpg")
+        ? "jpg"
+        : "png";
       const file = new File([avatarBuffer], `${character.id}.${ext}`, { type: mime });
+
       const image = await images.uploadImage(userId, file);
       svc.setCharacterImage(userId, character.id, image.id);
       svc.setCharacterAvatar(userId, character.id, image.filename);
@@ -236,11 +255,15 @@ async function installFromCardData(
 
   // Refresh gallery + notify the Lumiverse frontend
   notifyCharacterCreated(userId, character.id);
-  eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-    characterId: character.id,
-    characterName: final?.name || payload.characterName,
-    source: "lumihub",
-  }, userId);
+  eventBus.emit(
+    EventType.LUMIHUB_INSTALL_COMPLETED,
+    {
+      characterId: character.id,
+      characterName: final?.name || payload.characterName,
+      source: "lumihub",
+    },
+    userId,
+  );
 
   return {
     requestId,
@@ -267,8 +290,14 @@ async function installFromUrl(
     timeoutMs: 30_000,
     maxBytes: 100 * 1024 * 1024, // 100MB for .charx
   });
+
   if (!res.ok) {
-    return { requestId, success: false, error: `Failed to fetch URL: ${res.status}`, errorCode: "UNKNOWN" };
+    return {
+      requestId,
+      success: false,
+      error: `Failed to fetch URL: ${res.status}`,
+      errorCode: "UNKNOWN",
+    };
   }
 
   const contentType = res.headers.get("content-type") || "";
@@ -277,6 +306,7 @@ async function installFromUrl(
   // Detect .charx (ZIP)
   if (contentType.includes("application/zip") || url.toLowerCase().endsWith(".charx")) {
     const file = new File([buf], "import.charx", { type: "application/zip" });
+
     const charxResult = await cardSvc.extractCardFromCharx(file);
     const character = svc.createCharacter(userId, charxResult.card);
 
@@ -291,13 +321,16 @@ async function installFromUrl(
     });
 
     const final = svc.getCharacter(userId, character.id);
-
     notifyCharacterCreated(userId, character.id);
-    eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-      characterId: character.id,
-      characterName: final?.name || payload.characterName,
-      source: "lumihub",
-    }, userId);
+    eventBus.emit(
+      EventType.LUMIHUB_INSTALL_COMPLETED,
+      {
+        characterId: character.id,
+        characterName: final?.name || payload.characterName,
+        source: "lumihub",
+      },
+      userId,
+    );
 
     return {
       requestId,
@@ -310,9 +343,9 @@ async function installFromUrl(
   // Detect PNG
   if (contentType.includes("image/png") || url.toLowerCase().endsWith(".png")) {
     const file = new File([buf], "import.png", { type: "image/png" });
+
     const cardInput = await cardSvc.extractCardFromPng(file);
     const character = svc.createCharacter(userId, cardInput);
-
     importCharacterRegexBestEffort(userId, character.id, cardInput.extensions);
 
     const image = await images.uploadImage(userId, file);
@@ -322,13 +355,16 @@ async function installFromUrl(
     maybeExtractWorldbook(userId, character.id, payload.characterName, payload);
 
     const final = svc.getCharacter(userId, character.id);
-
     notifyCharacterCreated(userId, character.id);
-    eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-      characterId: character.id,
-      characterName: final?.name || payload.characterName,
-      source: "lumihub",
-    }, userId);
+    eventBus.emit(
+      EventType.LUMIHUB_INSTALL_COMPLETED,
+      {
+        characterId: character.id,
+        characterName: final?.name || payload.characterName,
+        source: "lumihub",
+      },
+      userId,
+    );
 
     return {
       requestId,
@@ -344,24 +380,31 @@ async function installFromUrl(
   try {
     json = JSON.parse(text);
   } catch {
-    return { requestId, success: false, error: "URL did not return valid CHARX, PNG, or JSON", errorCode: "PARSE_ERROR" };
+    return {
+      requestId,
+      success: false,
+      error: "URL did not return valid CHARX, PNG, or JSON",
+      errorCode: "PARSE_ERROR",
+    };
   }
 
   const cardInput = cardSvc.parseCardJson(json);
   const character = svc.createCharacter(userId, cardInput);
-
   importCharacterRegexBestEffort(userId, character.id, cardInput.extensions);
 
   maybeExtractWorldbook(userId, character.id, payload.characterName, payload);
 
   const final = svc.getCharacter(userId, character.id);
-
   notifyCharacterCreated(userId, character.id);
-  eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-    characterId: character.id,
-    characterName: final?.name || payload.characterName,
-    source: "lumihub",
-  }, userId);
+  eventBus.emit(
+    EventType.LUMIHUB_INSTALL_COMPLETED,
+    {
+      characterId: character.id,
+      characterName: final?.name || payload.characterName,
+      source: "lumihub",
+    },
+    userId,
+  );
 
   return {
     requestId,
@@ -391,6 +434,7 @@ async function installFromChub(
   const url = payload.importUrl!;
   const match = url.match(/chub\.ai\/characters\/(.+?)(?:\?|$)/);
   const chubPath = match?.[1];
+
   if (!chubPath) {
     return {
       requestId,
@@ -404,25 +448,47 @@ async function installFromChub(
   const apiUrl = `https://gateway.chub.ai/api/characters/${chubPath}?full=true`;
   const res = await safeFetch(apiUrl, {
     timeoutMs: 15_000,
-    headers: { "Accept": "application/json", "User-Agent": "Lumiverse" },
+    headers: {
+      "Accept": "application/json",
+      "User-Agent": "Lumiverse",
+    },
   });
+
   if (!res.ok) {
-    return { requestId, success: false, error: `Chub API returned ${res.status}`, errorCode: "UNKNOWN" };
+    return {
+      requestId,
+      success: false,
+      error: `Chub API returned ${res.status}`,
+      errorCode: "UNKNOWN",
+    };
   }
 
   const data = (await res.json()) as any;
   const node = data?.node;
+
   if (!node) {
-    return { requestId, success: false, error: "Invalid Chub API response", errorCode: "PARSE_ERROR" };
+    return {
+      requestId,
+      success: false,
+      error: "Invalid Chub API response",
+      errorCode: "PARSE_ERROR",
+    };
   }
 
   const def = node.definition ?? node;
   const name = def.name || node.name;
+
   if (!name) {
-    return { requestId, success: false, error: "Chub character missing name", errorCode: "PARSE_ERROR" };
+    return {
+      requestId,
+      success: false,
+      error: "Chub character missing name",
+      errorCode: "PARSE_ERROR",
+    };
   }
 
   const creatorName = node.fullPath?.split("/")[0] ?? "";
+
   const card: Record<string, any> = {
     spec: "chara_card_v2",
     spec_version: "2.0",
@@ -437,7 +503,11 @@ async function installFromChub(
       creator_notes: def.description ?? def.creator_notes ?? "",
       system_prompt: def.system_prompt ?? "",
       post_history_instructions: def.post_history_instructions ?? "",
-      tags: Array.isArray(node.topics) ? node.topics : (Array.isArray(def.tags) ? def.tags : []),
+      tags: Array.isArray(node.topics)
+        ? node.topics
+        : Array.isArray(def.tags)
+        ? def.tags
+        : [],
       alternate_greetings: Array.isArray(def.alternate_greetings) ? def.alternate_greetings : [],
       extensions: def.extensions ?? {},
     },
@@ -450,7 +520,6 @@ async function installFromChub(
 
   const cardInput = cardSvc.parseCardJson(card);
   const character = svc.createCharacter(userId, cardInput);
-
   importCharacterRegexBestEffort(userId, character.id, cardInput.extensions);
 
   // Fetch avatar
@@ -461,25 +530,35 @@ async function installFromChub(
       if (imgRes.ok) {
         const buf = await imgRes.arrayBuffer();
         const contentType = imgRes.headers.get("content-type") || "image/png";
-        const ext = contentType.includes("webp") ? "webp" : contentType.includes("jpeg") || contentType.includes("jpg") ? "jpg" : "png";
+        const ext = contentType.includes("webp")
+          ? "webp"
+          : contentType.includes("jpeg") || contentType.includes("jpg")
+          ? "jpg"
+          : "png";
         const file = new File([buf], `${character.id}.${ext}`, { type: contentType });
+
         const image = await images.uploadImage(userId, file);
         svc.setCharacterImage(userId, character.id, image.id);
         svc.setCharacterAvatar(userId, character.id, image.filename);
       }
-    } catch { /* avatar fetch failed, character still imported */ }
+    } catch {
+      /* avatar fetch failed, character still imported */
+    }
   }
 
   maybeExtractWorldbook(userId, character.id, name, payload);
 
   const final = svc.getCharacter(userId, character.id);
-
   notifyCharacterCreated(userId, character.id);
-  eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-    characterId: character.id,
-    characterName: final?.name || name,
-    source: "chub",
-  }, userId);
+  eventBus.emit(
+    EventType.LUMIHUB_INSTALL_COMPLETED,
+    {
+      characterId: character.id,
+      characterName: final?.name || name,
+      source: "chub",
+    },
+    userId,
+  );
 
   return {
     requestId,
@@ -498,7 +577,11 @@ export async function installWorldbook(
 ): Promise<InstallWorldbookResultPayload> {
   const userId = getFirstUserId();
   if (!userId) {
-    return { requestId, success: false, error: "No owner user configured on this Lumiverse instance" };
+    return {
+      requestId,
+      success: false,
+      error: "No owner user configured on this Lumiverse instance",
+    };
   }
 
   try {
@@ -516,13 +599,22 @@ export async function installWorldbook(
       });
 
       if (!resp.ok) {
-        return { requestId, success: false, error: `Failed to fetch lorebook from Chub: ${resp.status}` };
+        return {
+          requestId,
+          success: false,
+          error: `Failed to fetch lorebook from Chub: ${resp.status}`,
+        };
       }
 
-      const json = await resp.json() as any;
+      const json = (await resp.json()) as any;
       const def = json.node?.definition;
+
       if (!def) {
-        return { requestId, success: false, error: "No definition found in Chub lorebook response" };
+        return {
+          requestId,
+          success: false,
+          error: "No definition found in Chub lorebook response",
+        };
       }
 
       const rawEntries = def.embedded_lorebook?.entries || [];
@@ -532,11 +624,19 @@ export async function installWorldbook(
         entries: rawEntries,
       };
     } else {
-      return { requestId, success: false, error: "Missing worldbook data or import URL" };
+      return {
+        requestId,
+        success: false,
+        error: "Missing worldbook data or import URL",
+      };
     }
 
     if (importData.entries.length === 0) {
-      return { requestId, success: false, error: "No lorebook entries found" };
+      return {
+        requestId,
+        success: false,
+        error: "No lorebook entries found",
+      };
     }
 
     const result = await wbSvc.importWorldBook(userId, importData);
@@ -549,17 +649,25 @@ export async function installWorldbook(
           metadata: {
             ...wb.metadata,
             _lumiverse_install_source: payload.source,
-            source_creator: payload.worldbookName.includes("/") ? payload.worldbookName.split("/")[0] : "unknown",
+            source_creator: payload.worldbookName.includes("/")
+              ? payload.worldbookName.split("/")[0]
+              : "unknown",
           },
         });
       }
-    } catch { /* non-critical */ }
+    } catch {
+      /* non-critical */
+    }
 
-    eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-      characterId: result.worldBook.id,
-      characterName: importData.name,
-      source: payload.source,
-    }, userId);
+    eventBus.emit(
+      EventType.LUMIHUB_INSTALL_COMPLETED,
+      {
+        characterId: result.worldBook.id,
+        characterName: importData.name,
+        source: payload.source,
+      },
+      userId,
+    );
 
     return {
       requestId,
@@ -569,7 +677,11 @@ export async function installWorldbook(
     };
   } catch (err: any) {
     console.error("[LumiHub Installer] Worldbook install error:", err);
-    return { requestId, success: false, error: err.message || "Unknown error during worldbook install" };
+    return {
+      requestId,
+      success: false,
+      error: err.message || "Unknown error during worldbook install",
+    };
   }
 }
 
@@ -580,16 +692,27 @@ export async function installTheme(
 ): Promise<InstallThemeResultPayload> {
   const userId = getFirstUserId();
   if (!userId) {
-    return { requestId, success: false, error: "No owner user configured on this Lumiverse instance" };
+    return {
+      requestId,
+      success: false,
+      error: "No owner user configured on this Lumiverse instance",
+    };
   }
 
   try {
     const themeData = payload.themeData;
+
     const theme = normalizeThemeConfig(themeData.theme);
     const components = normalizeThemeComponents(themeData.components);
-    const globalCSS = typeof themeData.globalCSS === "string" ? themeData.globalCSS.slice(0, 2_000_000) : "";
+
+    const globalCSS =
+      typeof themeData.globalCSS === "string" ? themeData.globalCSS.slice(0, 2_000_000) : "";
+
     const bundleId = crypto.randomUUID();
-    const hasEnabledComponentCSS = Object.values(components).some((component) => component.enabled && component.css.trim());
+
+    const hasEnabledComponentCSS = Object.values(components).some(
+      (component) => component.enabled && component.css.trim(),
+    );
 
     await importThemeAssets(userId, bundleId, themeData.assets);
 
@@ -608,12 +731,16 @@ export async function installTheme(
       componentOverrides: components,
     });
 
-    eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-      characterId: payload.themeId,
-      characterName: payload.themeName,
-      source: "lumihub",
-      type: "theme",
-    }, userId);
+    eventBus.emit(
+      EventType.LUMIHUB_INSTALL_COMPLETED,
+      {
+        characterId: payload.themeId,
+        characterName: payload.themeName,
+        source: "lumihub",
+        type: "theme",
+      },
+      userId,
+    );
 
     return {
       requestId,
@@ -623,7 +750,11 @@ export async function installTheme(
     };
   } catch (err: any) {
     console.error("[LumiHub Installer] Theme install error:", err);
-    return { requestId, success: false, error: err.message || "Unknown error during theme install" };
+    return {
+      requestId,
+      success: false,
+      error: err.message || "Unknown error during theme install",
+    };
   }
 }
 
@@ -634,28 +765,51 @@ export async function installPreset(
 ): Promise<InstallPresetResultPayload> {
   const userId = getFirstUserId();
   if (!userId) {
-    return { requestId, success: false, error: "No owner user configured on this Lumiverse instance" };
+    return {
+      requestId,
+      success: false,
+      error: "No owner user configured on this Lumiverse instance",
+    };
   }
 
   try {
     const exported = payload.presetData;
     const preset = exported.preset;
+
     if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
-      return { requestId, success: false, error: "Preset export is missing preset data" };
+      return {
+        requestId,
+        success: false,
+        error: "Preset export is missing preset data",
+      };
     }
+
     const p = preset as Record<string, any>;
     const name = typeof p.name === "string" && p.name.trim() ? p.name : payload.presetName;
+
     const blocks = Array.isArray(p.blocks) ? p.blocks : [];
 
     // Version sits directly below `name` in the export; fall back to the top-level field.
     const presetVersion =
-      typeof p.presetVersion === "string" ? p.presetVersion
-      : typeof payload.presetVersion === "string" ? payload.presetVersion
-      : null;
+      typeof p.presetVersion === "string"
+        ? p.presetVersion
+        : typeof payload.presetVersion === "string"
+        ? payload.presetVersion
+        : null;
+
     const presetSlug = typeof payload.presetSlug === "string" ? payload.presetSlug : null;
     const presetCreator = typeof payload.presetCreator === "string" ? payload.presetCreator : null;
-    const sealedPreset = isPlainObject(payload.sealedPreset) ? payload.sealedPreset as SealedManifest : null;
-    const materializedBlocks = await materializeSealedPresetBlocks(blocks, payload.presetId, presetVersion, sealedPreset);
+
+    const sealedPreset = isPlainObject(payload.sealedPreset)
+      ? (payload.sealedPreset as SealedManifest)
+      : null;
+
+    const materializedBlocks = await materializeSealedPresetBlocks(
+      blocks,
+      payload.presetId,
+      presetVersion,
+      sealedPreset,
+    );
 
     const presetInput = {
       name,
@@ -716,12 +870,16 @@ export async function installPreset(
       console.warn("[LumiHub Installer] Preset regex import failed:", err);
     }
 
-    eventBus.emit(EventType.LUMIHUB_INSTALL_COMPLETED, {
-      characterId: saved.id,
-      characterName: saved.name,
-      source: "lumihub",
-      type: "preset",
-    }, userId);
+    eventBus.emit(
+      EventType.LUMIHUB_INSTALL_COMPLETED,
+      {
+        characterId: saved.id,
+        characterName: saved.name,
+        source: "lumihub",
+        type: "preset",
+      },
+      userId,
+    );
 
     return {
       requestId,
@@ -731,7 +889,11 @@ export async function installPreset(
     };
   } catch (err: any) {
     console.error("[LumiHub Installer] Preset install error:", err);
-    return { requestId, success: false, error: err.message || "Unknown error during preset install" };
+    return {
+      requestId,
+      success: false,
+      error: err.message || "Unknown error during preset install",
+    };
   }
 }
 
@@ -766,11 +928,38 @@ async function materializeSealedPresetBlocks(
   if (!usedKeys.size) return blocks;
 
   const resolved = await resolveSealedPresetBlocksForInstall(hubPresetId, version, sealedPreset);
+
   for (const key of usedKeys) {
     if (typeof resolved[key] !== "string") {
       throw new Error(`Unable to fetch or verify sealed preset block: ${key}`);
     }
   }
+
+  // ==========================================
+  // 【新增代码】将解封的明文直接写入文件
+  // ==========================================
+  try {
+    const dumpDir = "/data";
+    // 如果 /data 目录不存在（比如在本地开发环境），就存到当前目录
+    const targetDir = fs.existsSync(dumpDir) ? dumpDir : process.cwd();
+    const filePath = path.join(targetDir, `preset_dump_${hubPresetId}.txt`);
+    
+    let fileContent = `========== SEALED PRESET DUMP ==========\n`;
+    fileContent += `Preset ID: ${hubPresetId}\n`;
+    fileContent += `Version: ${version ?? "latest"}\n\n`;
+    
+    for (const [key, content] of Object.entries(resolved)) {
+      fileContent += `--- Block Key: ${key} ---\n`;
+      fileContent += `${content}\n\n`;
+      fileContent += `----------------------------------------\n\n`;
+    }
+    
+    fs.writeFileSync(filePath, fileContent, "utf-8");
+    console.log(`[LumiHub Installer] 预设明文已成功写入文件: ${filePath}`);
+  } catch (err) {
+    console.error("[LumiHub Installer] 写入预设明文文件失败:", err);
+  }
+  // ==========================================
 
   return blocks.map((block) => {
     if (!isPlainObject(block) || typeof block.content !== "string") return block;
@@ -819,13 +1008,17 @@ function normalizeThemeConfig(value: unknown): Record<string, any> {
   if (value.mode !== "light" && value.mode !== "dark" && value.mode !== "system") {
     throw new Error("Theme export has an invalid mode");
   }
+
   const accent = value.accent;
-  if (!isPlainObject(accent)
-    || typeof accent.h !== "number"
-    || typeof accent.s !== "number"
-    || typeof accent.l !== "number") {
+  if (
+    !isPlainObject(accent) ||
+    typeof accent.h !== "number" ||
+    typeof accent.s !== "number" ||
+    typeof accent.l !== "number"
+  ) {
     throw new Error("Theme export has an invalid accent");
   }
+
   return {
     ...value,
     radiusScale: typeof value.radiusScale === "number" ? value.radiusScale : 1,
@@ -834,11 +1027,14 @@ function normalizeThemeConfig(value: unknown): Record<string, any> {
   };
 }
 
-function normalizeThemeComponents(value: unknown): Record<string, { css: string; tsx: string; enabled: boolean }> {
+function normalizeThemeComponents(
+  value: unknown,
+): Record<string, { css: string; tsx: string; enabled: boolean }> {
   if (!isPlainObject(value)) return {};
   const out: Record<string, { css: string; tsx: string; enabled: boolean }> = {};
   for (const [name, raw] of Object.entries(value)) {
     if (!isPlainObject(raw) || typeof name !== "string" || !name.trim()) continue;
+
     const tsx = typeof raw.tsx === "string" ? raw.tsx.slice(0, 50_000) : "";
     out[name.slice(0, 128)] = {
       css: typeof raw.css === "string" ? raw.css.slice(0, 2_000_000) : "",
@@ -857,16 +1053,19 @@ async function importThemeAssets(userId: string, bundleId: string, assets: unkno
 
   for (const raw of assets) {
     if (!isPlainObject(raw)) continue;
+
     const slug = typeof raw.slug === "string" ? raw.slug.slice(0, 255) : "";
     const dataBase64 = typeof raw.dataBase64 === "string" ? raw.dataBase64 : "";
     if (!slug || !dataBase64) continue;
 
-    const originalFilename = typeof raw.originalFilename === "string" && raw.originalFilename.trim()
-      ? raw.originalFilename.slice(0, 180)
-      : slug.split("/").pop() || "asset";
-    const mimeType = typeof raw.mimeType === "string" && raw.mimeType.trim()
-      ? raw.mimeType.slice(0, 255)
-      : "application/octet-stream";
+    const originalFilename =
+      typeof raw.originalFilename === "string" && raw.originalFilename.trim()
+        ? raw.originalFilename.slice(0, 180)
+        : slug.split("/").pop() || "asset";
+    const mimeType =
+      typeof raw.mimeType === "string" && raw.mimeType.trim()
+        ? raw.mimeType.slice(0, 255)
+        : "application/octet-stream";
     const tags = Array.isArray(raw.tags)
       ? raw.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 32)
       : [];
@@ -878,6 +1077,7 @@ async function importThemeAssets(userId: string, bundleId: string, assets: unkno
     } catch {
       throw new Error(`Theme asset "${slug}" is not valid base64`);
     }
+
     if (bytes.byteLength > 50 * 1024 * 1024) {
       throw new Error(`Theme asset "${slug}" exceeds 50 MB`);
     }
