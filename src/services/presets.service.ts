@@ -21,9 +21,11 @@ function prunePromptVariableOrphans(
   if (!metadata || typeof metadata !== "object") return metadata;
   const raw = (metadata as any).promptVariables;
   if (!raw || typeof raw !== "object") return metadata;
+
   const blocks = Array.isArray(promptOrder) ? (promptOrder as PromptBlock[]) : [];
   const blockById = new Map<string, PromptBlock>();
   for (const b of blocks) if (b && typeof b === "object" && b.id) blockById.set(b.id, b);
+
   const cleaned: Record<string, Record<string, PromptVariableValue>> = {};
   for (const [blockId, bucket] of Object.entries(raw as Record<string, Record<string, PromptVariableValue>>)) {
     const block = blockById.get(blockId);
@@ -35,9 +37,9 @@ function prunePromptVariableOrphans(
     }
     if (Object.keys(kept).length) cleaned[blockId] = kept;
   }
+
   return { ...(metadata as Record<string, unknown>), promptVariables: cleaned };
 }
-
 export interface PresetRegistryRow {
   id: string;
   name: string;
@@ -93,6 +95,7 @@ export function listPresetRegistry(
 ): PaginatedResult<PresetRegistryRow> {
   const filters: string[] = [];
   const params: any[] = [userId];
+
   if (provider) {
     filters.push("provider = ?");
     params.push(provider);
@@ -101,9 +104,14 @@ export function listPresetRegistry(
     filters.push("engine = ?");
     params.push(engine);
   }
+
   const filterSQL = filters.length > 0 ? " AND " + filters.join(" AND ") : "";
+
   return paginatedQuery<any, PresetRegistryRow>(
-    `SELECT id, name, provider, updated_at, COALESCE(json_array_length(prompt_order), 0) as block_count FROM presets WHERE user_id = ?${filterSQL} ORDER BY updated_at DESC`,
+    `SELECT id, name, provider, updated_at, COALESCE(json_array_length(prompt_order), 0) as block_count
+     FROM presets
+     WHERE user_id = ?${filterSQL}
+     ORDER BY updated_at DESC`,
     `SELECT COUNT(*) as count FROM presets WHERE user_id = ?${filterSQL}`,
     params,
     pagination,
@@ -141,7 +149,8 @@ export function getPresetRegistrySignature(
   const filterSQL = filters.length > 0 ? " AND " + filters.join(" AND ") : "";
   const row = getDb()
     .query(
-      `SELECT COUNT(*) as count, COALESCE(MAX(updated_at), 0) as maxUpdatedAt FROM presets WHERE user_id = ?${filterSQL}`
+      `SELECT COUNT(*) as count, COALESCE(MAX(updated_at), 0) as maxUpdatedAt
+       FROM presets WHERE user_id = ?${filterSQL}`
     )
     .get(...params) as { count: number; maxUpdatedAt: number };
   return { count: row.count, maxUpdatedAt: row.maxUpdatedAt };
@@ -252,66 +261,31 @@ export function assertUsablePreset(
 }
 
 export function createPreset(userId: string, input: CreatePresetInput): Preset {
-  // ==========================================
-  // 【终极拦截：无条件打印】
-  // ==========================================
-  console.log("\n========== [CREATE PRESET HIT] ==========");
-  console.log("创建预设函数被调用！预设名称:", input.name);
-  
-  // 检查 prompt_order 里有没有占位符
-  if (Array.isArray(input.prompt_order)) {
-    for (const block of input.prompt_order) {
-      const content = typeof block?.content === "string" ? block.content : "";
-      if (content.includes("presetBlock::") || content.includes("pblock::")) {
-        console.log(`发现占位符 -> Block [${block.name}]: ${content}`);
-      }
-    }
-  }
-  
-  // 打印 metadata 里是否带有解封所需的信息
-  const meta = input.metadata as any || {};
-  console.log("metadata 中的 _lumiverse_lumihub_id:", meta._lumiverse_lumihub_id);
-  console.log("metadata 中是否有 _lumiverse_sealed_preset:", !!meta._lumiverse_sealed_preset);
-  
-  // 把整个 input 的结构简略打印出来（方便排查前端到底传了什么格式）
-  try {
-    const inputKeys = Object.keys(input || {});
-    console.log("input 的顶层字段:", inputKeys);
-    if (inputKeys.includes("preset")) {
-      console.log("input.preset 的顶层字段:", Object.keys((input as any).preset || {}));
-    }
-  } catch (e) {
-    console.error("打印 input 结构时出错:", e);
-  }
-  console.log("========== [CREATE PRESET END] ==========\n");
-  // ==========================================
-
   const id = crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
+
   const cleanedMetadata = prunePromptVariableOrphans(input.prompt_order, input.metadata) || {};
+
   getDb()
     .query(
       "INSERT INTO presets (id, name, provider, engine, parameters, prompt_order, prompts, metadata, user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
-      id,
-      input.name,
-      input.provider,
-      input.engine || "classic",
+      id, input.name, input.provider, input.engine || "classic",
       JSON.stringify(input.parameters || {}),
       JSON.stringify(input.prompt_order || []),
       JSON.stringify(input.prompts || {}),
       JSON.stringify(cleanedMetadata),
-      userId,
-      now,
-      now
+      userId, now, now
     );
+
   return getPreset(userId, id)!;
 }
 
 export function updatePreset(userId: string, id: string, input: UpdatePresetInput): Preset | null {
   const existing = getPreset(userId, id);
   if (!existing) return null;
+
   const fields: string[] = [];
   const values: any[] = [];
 
@@ -330,34 +304,13 @@ export function updatePreset(userId: string, id: string, input: UpdatePresetInpu
     }
   }
 
-  if (input.name !== undefined) {
-    fields.push("name = ?");
-    values.push(input.name);
-  }
-  if (input.provider !== undefined) {
-    fields.push("provider = ?");
-    values.push(input.provider);
-  }
-  if (input.engine !== undefined) {
-    fields.push("engine = ?");
-    values.push(input.engine);
-  }
-  if (input.parameters !== undefined) {
-    fields.push("parameters = ?");
-    values.push(JSON.stringify(input.parameters));
-  }
-  if (input.prompt_order !== undefined) {
-    fields.push("prompt_order = ?");
-    values.push(JSON.stringify(input.prompt_order));
-  }
-  if (input.prompts !== undefined) {
-    fields.push("prompts = ?");
-    values.push(JSON.stringify(input.prompts));
-  }
-  if (writeMetadata !== undefined) {
-    fields.push("metadata = ?");
-    values.push(JSON.stringify(writeMetadata));
-  }
+  if (input.name !== undefined) { fields.push("name = ?"); values.push(input.name); }
+  if (input.provider !== undefined) { fields.push("provider = ?"); values.push(input.provider); }
+  if (input.engine !== undefined) { fields.push("engine = ?"); values.push(input.engine); }
+  if (input.parameters !== undefined) { fields.push("parameters = ?"); values.push(JSON.stringify(input.parameters)); }
+  if (input.prompt_order !== undefined) { fields.push("prompt_order = ?"); values.push(JSON.stringify(input.prompt_order)); }
+  if (input.prompts !== undefined) { fields.push("prompts = ?"); values.push(JSON.stringify(input.prompts)); }
+  if (writeMetadata !== undefined) { fields.push("metadata = ?"); values.push(JSON.stringify(writeMetadata)); }
 
   if (fields.length === 0) return existing;
 
@@ -367,7 +320,6 @@ export function updatePreset(userId: string, id: string, input: UpdatePresetInpu
   values.push(userId);
 
   getDb().query(`UPDATE presets SET ${fields.join(", ")} WHERE id = ? AND user_id = ?`).run(...values);
-
   const updated = getPreset(userId, id)!;
   eventBus.emit(EventType.PRESET_CHANGED, { id, preset: updated }, userId);
   return updated;
@@ -375,6 +327,7 @@ export function updatePreset(userId: string, id: string, input: UpdatePresetInpu
 
 export function deletePreset(userId: string, id: string): boolean {
   const db = getDb();
+
   // Capture connection profiles that reference this preset. The FK on
   // connection_profiles.preset_id (ON DELETE SET NULL) will clear the
   // references when the preset row is removed, but we need the list up front
@@ -396,11 +349,11 @@ export function deletePreset(userId: string, id: string): boolean {
   // the now-deleted preset. Covers defaults, per-character, per-chat, and
   // per-connection profile bindings.
   for (const s of settingsSvc.getAllSettings(userId)) {
-    if (s.key !== "presetProfileDefaults" && 
-        !s.key.startsWith("presetProfileDefaults:") && 
-        !s.key.startsWith("presetProfile:character:") && 
-        !s.key.startsWith("presetProfile:chat:") && 
-        !s.key.startsWith("presetProfile:connection:")) continue;
+    if (s.key !== "presetProfileDefaults"
+      && !s.key.startsWith("presetProfileDefaults:")
+      && !s.key.startsWith("presetProfile:character:")
+      && !s.key.startsWith("presetProfile:chat:")
+      && !s.key.startsWith("presetProfile:connection:")) continue;
     if (s.value && typeof s.value === "object" && (s.value as any).preset_id === id) {
       settingsSvc.deleteSetting(userId, s.key);
     }
@@ -429,21 +382,12 @@ export function deletePreset(userId: string, id: string): boolean {
 
 function normalizePromptBlock(input: CreatePromptBlockInput): PromptBlock {
   const marker = typeof input.marker === "string" ? input.marker : null;
-  const role =
-    input.role === "system" || 
-    input.role === "user" || 
-    input.role === "assistant" || 
-    input.role === "user_append" || 
-    input.role === "assistant_append"
-      ? input.role
-      : "system";
-  const position =
-    input.position === "pre_history" || 
-    input.position === "post_history" || 
-    input.position === "in_history"
-      ? input.position
-      : "pre_history";
-
+  const role = input.role === "system" || input.role === "user" || input.role === "assistant" || input.role === "user_append" || input.role === "assistant_append"
+    ? input.role
+    : "system";
+  const position = input.position === "pre_history" || input.position === "post_history" || input.position === "in_history"
+    ? input.position
+    : "pre_history";
   return {
     id: typeof input.id === "string" && input.id.trim() ? input.id : crypto.randomUUID(),
     name: typeof input.name === "string" && input.name.trim() ? input.name : "New Chat",
@@ -455,14 +399,11 @@ function normalizePromptBlock(input: CreatePromptBlockInput): PromptBlock {
     marker,
     isLocked: input.isLocked !== undefined ? !!input.isLocked : false,
     color: typeof input.color === "string" ? input.color : null,
-    injectionTrigger: Array.isArray(input.injectionTrigger)
-      ? input.injectionTrigger.filter((v): v is string => typeof v === "string")
-      : [],
+    injectionTrigger: Array.isArray(input.injectionTrigger) ? input.injectionTrigger.filter((v): v is string => typeof v === "string") : [],
     group: typeof input.group === "string" ? input.group : null,
-    categoryMode:
-      marker === "category" && (input.categoryMode === "radio" || input.categoryMode === "checkbox")
-        ? input.categoryMode
-        : null,
+    categoryMode: marker === "category" && (input.categoryMode === "radio" || input.categoryMode === "checkbox")
+      ? input.categoryMode
+      : null,
     ...(Array.isArray(input.variables) ? { variables: input.variables } : {}),
   };
 }
@@ -491,13 +432,14 @@ export function createPromptBlock(
 ): PromptBlock | null {
   const preset = getPreset(userId, presetId);
   if (!preset) return null;
+
   const blocks = normalizePromptBlocks((preset.prompt_order || []) as PromptBlock[]);
   const block = normalizePromptBlock(input || {});
-  const insertAt =
-    typeof index === "number" && Number.isFinite(index)
-      ? Math.max(0, Math.min(blocks.length, Math.floor(index)))
-      : blocks.length;
+  const insertAt = typeof index === "number" && Number.isFinite(index)
+    ? Math.max(0, Math.min(blocks.length, Math.floor(index)))
+    : blocks.length;
   blocks.splice(insertAt, 0, block);
+
   updatePreset(userId, presetId, { prompt_order: blocks });
   return block;
 }
@@ -510,9 +452,11 @@ export function updatePromptBlock(
 ): PromptBlock | null {
   const preset = getPreset(userId, presetId);
   if (!preset) return null;
+
   const blocks = normalizePromptBlocks((preset.prompt_order || []) as PromptBlock[]);
   const index = blocks.findIndex((block) => block.id === blockId);
   if (index === -1) return null;
+
   const updated = normalizePromptBlock({ ...blocks[index], ...(input || {}), id: blockId });
   blocks[index] = updated;
   updatePreset(userId, presetId, { prompt_order: blocks });
@@ -522,9 +466,11 @@ export function updatePromptBlock(
 export function deletePromptBlock(userId: string, presetId: string, blockId: string): boolean {
   const preset = getPreset(userId, presetId);
   if (!preset) return false;
+
   const blocks = normalizePromptBlocks((preset.prompt_order || []) as PromptBlock[]);
   const index = blocks.findIndex((block) => block.id === blockId);
   if (index === -1) return false;
+
   blocks.splice(index, 1);
   updatePreset(userId, presetId, { prompt_order: blocks });
   return true;
@@ -533,6 +479,7 @@ export function deletePromptBlock(userId: string, presetId: string, blockId: str
 export function listPromptBlockCategories(userId: string, presetId: string): PromptBlockCategoryGroup[] | null {
   const blocks = listPromptBlocks(userId, presetId);
   if (!blocks) return null;
+
   const groups: PromptBlockCategoryGroup[] = [];
   let current: PromptBlockCategoryGroup = { categoryBlock: null, children: [] };
   for (const block of blocks) {
