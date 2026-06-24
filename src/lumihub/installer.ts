@@ -20,8 +20,6 @@ import * as themeAssetsSvc from "../services/theme-assets.service";
 import { getCharacterWorldBookIds, setCharacterWorldBookIds } from "../utils/character-world-books";
 import { applyCharxModulesAndAssets } from "../services/charx-import.service";
 import { resolveSealedPresetBlocksForInstall, type SealedManifest } from "./sealed-presets";
-import * as fs from "fs";
-import * as path from "path";
 import type {
   InstallCharacterPayload,
   InstallPresetPayload,
@@ -72,7 +70,6 @@ export async function installCharacter(
     // Stamp install source metadata for manifest tracking
     if (result.success && result.characterId) {
       stampInstallSource(userId, result.characterId, payload);
-
       // Download and import gallery images (best-effort, non-blocking)
       if (payload.galleryImageUrls && payload.galleryImageUrls.length > 0) {
         importGalleryFromUrls(userId, result.characterId, payload.galleryImageUrls).catch((err) => {
@@ -139,7 +136,6 @@ async function importGalleryFromUrls(userId: string, characterId: string, urls: 
     try {
       const res = await safeFetch(url, { timeoutMs: 15_000, maxBytes: 50 * 1024 * 1024 });
       if (!res.ok) return null;
-
       const buf = await res.arrayBuffer();
       const contentType = res.headers.get("content-type") || "image/webp";
       const ext = contentType.includes("png")
@@ -148,7 +144,6 @@ async function importGalleryFromUrls(userId: string, characterId: string, urls: 
         ? "jpg"
         : "webp";
       const filename = `gallery_${crypto.randomUUID()}.${ext}`;
-
       return new File([buf], filename, { type: contentType });
     } catch {
       // Skip individual failures
@@ -183,7 +178,6 @@ function maybeExtractWorldbook(
   payload: InstallCharacterPayload
 ): void {
   if (!payload.importEmbeddedWorldbook) return;
-
   const character = svc.getCharacter(userId, characterId);
   const charBook = character?.extensions?.character_book;
   if (!charBook || !charBook.entries || charBook.entries.length === 0) return;
@@ -239,7 +233,6 @@ async function installFromCardData(
         ? "jpg"
         : "png";
       const file = new File([avatarBuffer], `${character.id}.${ext}`, { type: mime });
-
       const image = await images.uploadImage(userId, file);
       svc.setCharacterImage(userId, character.id, image.id);
       svc.setCharacterAvatar(userId, character.id, image.filename);
@@ -252,7 +245,6 @@ async function installFromCardData(
   maybeExtractWorldbook(userId, character.id, payload.characterName, payload);
 
   const final = svc.getCharacter(userId, character.id);
-
   // Refresh gallery + notify the Lumiverse frontend
   notifyCharacterCreated(userId, character.id);
   eventBus.emit(
@@ -262,7 +254,7 @@ async function installFromCardData(
       characterName: final?.name || payload.characterName,
       source: "lumihub",
     },
-    userId,
+    userId
   );
 
   return {
@@ -306,7 +298,6 @@ async function installFromUrl(
   // Detect .charx (ZIP)
   if (contentType.includes("application/zip") || url.toLowerCase().endsWith(".charx")) {
     const file = new File([buf], "import.charx", { type: "application/zip" });
-
     const charxResult = await cardSvc.extractCardFromCharx(file);
     const character = svc.createCharacter(userId, charxResult.card);
 
@@ -329,7 +320,7 @@ async function installFromUrl(
         characterName: final?.name || payload.characterName,
         source: "lumihub",
       },
-      userId,
+      userId
     );
 
     return {
@@ -343,9 +334,9 @@ async function installFromUrl(
   // Detect PNG
   if (contentType.includes("image/png") || url.toLowerCase().endsWith(".png")) {
     const file = new File([buf], "import.png", { type: "image/png" });
-
     const cardInput = await cardSvc.extractCardFromPng(file);
     const character = svc.createCharacter(userId, cardInput);
+
     importCharacterRegexBestEffort(userId, character.id, cardInput.extensions);
 
     const image = await images.uploadImage(userId, file);
@@ -363,7 +354,7 @@ async function installFromUrl(
         characterName: final?.name || payload.characterName,
         source: "lumihub",
       },
-      userId,
+      userId
     );
 
     return {
@@ -390,6 +381,7 @@ async function installFromUrl(
 
   const cardInput = cardSvc.parseCardJson(json);
   const character = svc.createCharacter(userId, cardInput);
+
   importCharacterRegexBestEffort(userId, character.id, cardInput.extensions);
 
   maybeExtractWorldbook(userId, character.id, payload.characterName, payload);
@@ -403,7 +395,7 @@ async function installFromUrl(
       characterName: final?.name || payload.characterName,
       source: "lumihub",
     },
-    userId,
+    userId
   );
 
   return {
@@ -465,7 +457,6 @@ async function installFromChub(
 
   const data = (await res.json()) as any;
   const node = data?.node;
-
   if (!node) {
     return {
       requestId,
@@ -477,7 +468,6 @@ async function installFromChub(
 
   const def = node.definition ?? node;
   const name = def.name || node.name;
-
   if (!name) {
     return {
       requestId,
@@ -520,6 +510,7 @@ async function installFromChub(
 
   const cardInput = cardSvc.parseCardJson(card);
   const character = svc.createCharacter(userId, cardInput);
+
   importCharacterRegexBestEffort(userId, character.id, cardInput.extensions);
 
   // Fetch avatar
@@ -536,7 +527,6 @@ async function installFromChub(
           ? "jpg"
           : "png";
         const file = new File([buf], `${character.id}.${ext}`, { type: contentType });
-
         const image = await images.uploadImage(userId, file);
         svc.setCharacterImage(userId, character.id, image.id);
         svc.setCharacterAvatar(userId, character.id, image.filename);
@@ -557,7 +547,7 @@ async function installFromChub(
       characterName: final?.name || name,
       source: "chub",
     },
-    userId,
+    userId
   );
 
   return {
@@ -597,7 +587,6 @@ export async function installWorldbook(
         timeoutMs: 15_000,
         maxBytes: 100 * 1024 * 1024,
       });
-
       if (!resp.ok) {
         return {
           requestId,
@@ -608,7 +597,6 @@ export async function installWorldbook(
 
       const json = (await resp.json()) as any;
       const def = json.node?.definition;
-
       if (!def) {
         return {
           requestId,
@@ -666,7 +654,7 @@ export async function installWorldbook(
         characterName: importData.name,
         source: payload.source,
       },
-      userId,
+      userId
     );
 
     return {
@@ -701,17 +689,14 @@ export async function installTheme(
 
   try {
     const themeData = payload.themeData;
-
     const theme = normalizeThemeConfig(themeData.theme);
     const components = normalizeThemeComponents(themeData.components);
-
     const globalCSS =
       typeof themeData.globalCSS === "string" ? themeData.globalCSS.slice(0, 2_000_000) : "";
 
     const bundleId = crypto.randomUUID();
-
     const hasEnabledComponentCSS = Object.values(components).some(
-      (component) => component.enabled && component.css.trim(),
+      (component) => component.enabled && component.css.trim()
     );
 
     await importThemeAssets(userId, bundleId, themeData.assets);
@@ -719,8 +704,14 @@ export async function installTheme(
     settingsSvc.putMany(userId, {
       theme: {
         ...theme,
-        id: typeof theme.id === "string" && theme.id.trim() ? theme.id : payload.themeId,
-        name: typeof theme.name === "string" && theme.name.trim() ? theme.name : payload.themeName,
+        id:
+          typeof theme.id === "string" && theme.id.trim()
+            ? theme.id
+            : payload.themeId,
+        name:
+          typeof theme.name === "string" && theme.name.trim()
+            ? theme.name
+            : payload.themeName,
       },
       customCSS: {
         css: globalCSS,
@@ -739,7 +730,7 @@ export async function installTheme(
         source: "lumihub",
         type: "theme",
       },
-      userId,
+      userId
     );
 
     return {
@@ -775,7 +766,6 @@ export async function installPreset(
   try {
     const exported = payload.presetData;
     const preset = exported.preset;
-
     if (!preset || typeof preset !== "object" || Array.isArray(preset)) {
       return {
         requestId,
@@ -785,7 +775,8 @@ export async function installPreset(
     }
 
     const p = preset as Record<string, any>;
-    const name = typeof p.name === "string" && p.name.trim() ? p.name : payload.presetName;
+    const name =
+      typeof p.name === "string" && p.name.trim() ? p.name : payload.presetName;
 
     const blocks = Array.isArray(p.blocks) ? p.blocks : [];
 
@@ -797,8 +788,10 @@ export async function installPreset(
         ? payload.presetVersion
         : null;
 
-    const presetSlug = typeof payload.presetSlug === "string" ? payload.presetSlug : null;
-    const presetCreator = typeof payload.presetCreator === "string" ? payload.presetCreator : null;
+    const presetSlug =
+      typeof payload.presetSlug === "string" ? payload.presetSlug : null;
+    const presetCreator =
+      typeof payload.presetCreator === "string" ? payload.presetCreator : null;
 
     const sealedPreset = isPlainObject(payload.sealedPreset)
       ? (payload.sealedPreset as SealedManifest)
@@ -808,7 +801,7 @@ export async function installPreset(
       blocks,
       payload.presetId,
       presetVersion,
-      sealedPreset,
+      sealedPreset
     );
 
     const presetInput = {
@@ -827,7 +820,8 @@ export async function installPreset(
       metadata: {
         source: isPlainObject(p.source) ? p.source : null,
         modelProfiles: isPlainObject(p.modelProfiles) ? p.modelProfiles : {},
-        schemaVersion: typeof p.schemaVersion === "number" ? p.schemaVersion : exported.schemaVersion ?? 1,
+        schemaVersion:
+          typeof p.schemaVersion === "number" ? p.schemaVersion : exported.schemaVersion ?? 1,
         description: typeof p.description === "string" ? p.description : "",
         isDefault: !!p.isDefault,
         lastProfileKey: typeof p.lastProfileKey === "string" ? p.lastProfileKey : null,
@@ -878,7 +872,7 @@ export async function installPreset(
         source: "lumihub",
         type: "preset",
       },
-      userId,
+      userId
     );
 
     return {
@@ -917,6 +911,7 @@ async function materializeSealedPresetBlocks(
       manifestByKey.set(entry.key, { sha256: entry.sha256 });
     }
   }
+
   if (!manifestByKey.size) return blocks;
 
   const usedKeys = new Set<string>();
@@ -925,9 +920,26 @@ async function materializeSealedPresetBlocks(
     const key = extractExactSealedPlaceholder(block.content);
     if (key && manifestByKey.has(key)) usedKeys.add(key);
   }
+
   if (!usedKeys.size) return blocks;
 
   const resolved = await resolveSealedPresetBlocksForInstall(hubPresetId, version, sealedPreset);
+
+  // ==========================================
+  // 【打印解封明文到日志】
+  // ==========================================
+  console.log("\n========== [LUMIHUB INSTALLER DUMP] ==========");
+  console.log(`Preset ID: ${hubPresetId}, Version: ${version}`);
+  console.log(`解封了 ${Object.keys(resolved).length} 个块:`);
+
+  for (const [key, content] of Object.entries(resolved)) {
+    console.log(`\n--- Block Key: ${key} ---`);
+    console.log(content);
+    console.log(`--- End of Block ---\n`);
+  }
+
+  console.log("========== [LUMIHUB INSTALLER DUMP END] ==========\n");
+  // ==========================================
 
   for (const key of usedKeys) {
     if (typeof resolved[key] !== "string") {
@@ -935,37 +947,12 @@ async function materializeSealedPresetBlocks(
     }
   }
 
-  // ==========================================
-  // 【新增代码】将解封的明文直接写入文件
-  // ==========================================
-  try {
-    const dumpDir = "/data";
-    // 如果 /data 目录不存在（比如在本地开发环境），就存到当前目录
-    const targetDir = fs.existsSync(dumpDir) ? dumpDir : process.cwd();
-    const filePath = path.join(targetDir, `preset_dump_${hubPresetId}.txt`);
-    
-    let fileContent = `========== SEALED PRESET DUMP ==========\n`;
-    fileContent += `Preset ID: ${hubPresetId}\n`;
-    fileContent += `Version: ${version ?? "latest"}\n\n`;
-    
-    for (const [key, content] of Object.entries(resolved)) {
-      fileContent += `--- Block Key: ${key} ---\n`;
-      fileContent += `${content}\n\n`;
-      fileContent += `----------------------------------------\n\n`;
-    }
-    
-    fs.writeFileSync(filePath, fileContent, "utf-8");
-    console.log(`[LumiHub Installer] 预设明文已成功写入文件: ${filePath}`);
-  } catch (err) {
-    console.error("[LumiHub Installer] 写入预设明文文件失败:", err);
-  }
-  // ==========================================
-
   return blocks.map((block) => {
     if (!isPlainObject(block) || typeof block.content !== "string") return block;
     const key = extractExactSealedPlaceholder(block.content);
     const manifestEntry = key ? manifestByKey.get(key) : null;
     if (!key || !manifestEntry) return block;
+
     return {
       ...block,
       content: resolved[key],
@@ -996,6 +983,7 @@ function extractPresetRegexScripts(exported: Record<string, any>): any[] {
     exported?.extensions?.regex_scripts,
     exported?.extensions?.lumiverse_modules?.regex_scripts,
   ];
+
   for (const candidate of candidates) {
     if (Array.isArray(candidate) && candidate.length > 0) return candidate;
   }
@@ -1004,7 +992,8 @@ function extractPresetRegexScripts(exported: Record<string, any>): any[] {
 
 function normalizeThemeConfig(value: unknown): Record<string, any> {
   if (!isPlainObject(value)) throw new Error("Theme export is missing theme data");
-  if (typeof value.name !== "string" || !value.name.trim()) throw new Error("Theme export is missing a theme name");
+  if (typeof value.name !== "string" || !value.name.trim())
+    throw new Error("Theme export is missing a theme name");
   if (value.mode !== "light" && value.mode !== "dark" && value.mode !== "system") {
     throw new Error("Theme export has an invalid mode");
   }
@@ -1028,7 +1017,7 @@ function normalizeThemeConfig(value: unknown): Record<string, any> {
 }
 
 function normalizeThemeComponents(
-  value: unknown,
+  value: unknown
 ): Record<string, { css: string; tsx: string; enabled: boolean }> {
   if (!isPlainObject(value)) return {};
   const out: Record<string, { css: string; tsx: string; enabled: boolean }> = {};
@@ -1062,13 +1051,16 @@ async function importThemeAssets(userId: string, bundleId: string, assets: unkno
       typeof raw.originalFilename === "string" && raw.originalFilename.trim()
         ? raw.originalFilename.slice(0, 180)
         : slug.split("/").pop() || "asset";
+
     const mimeType =
       typeof raw.mimeType === "string" && raw.mimeType.trim()
         ? raw.mimeType.slice(0, 255)
         : "application/octet-stream";
+
     const tags = Array.isArray(raw.tags)
       ? raw.tags.filter((tag): tag is string => typeof tag === "string").slice(0, 32)
       : [];
+
     const metadata = isPlainObject(raw.metadata) ? raw.metadata : {};
 
     let bytes: Buffer;
