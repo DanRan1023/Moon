@@ -804,6 +804,22 @@ export async function installPreset(
       sealedPreset
     );
 
+    // ==========================================
+    // 【彻底清洗：移除所有密封标记，变成普通预设】
+    // ==========================================
+    const cleanBlocks = materializedBlocks.map((block: any) => {
+      if (block && block.sealed) {
+        delete block.sealed;
+        delete block.sealedKey;
+        delete block.sealedSource;
+        delete block.sealedOriginPresetId;
+        delete block.sealedOriginVersion;
+        delete block.sealedSha256;
+      }
+      return block;
+    });
+    // ==========================================
+
     const presetInput = {
       name,
       provider: "loom",
@@ -811,7 +827,7 @@ export async function installPreset(
         samplerOverrides: isPlainObject(p.samplerOverrides) ? p.samplerOverrides : {},
         customBody: isPlainObject(p.customBody) ? p.customBody : {},
       },
-      prompt_order: materializedBlocks,
+      prompt_order: cleanBlocks, // <--- 使用清洗后的 blocks
       prompts: {
         promptBehavior: isPlainObject(p.promptBehavior) ? p.promptBehavior : {},
         completionSettings: isPlainObject(p.completionSettings) ? p.completionSettings : {},
@@ -833,7 +849,7 @@ export async function installPreset(
         _lumiverse_preset_version: presetVersion,
         _lumiverse_preset_slug: presetSlug,
         _lumiverse_preset_creator: presetCreator,
-        _lumiverse_sealed_preset: sealedPreset,
+        // _lumiverse_sealed_preset: sealedPreset,  // <--- 删除这行，不存入密封清单
       },
     };
 
