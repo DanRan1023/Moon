@@ -107,7 +107,17 @@ export function registerStateMacros(): void {
       const key = (ctx.args[0] ?? "").trim();
       if (!key) return "";
       const { resolveSealedPresetBlock } = await import("../../lumihub/sealed-presets");
-      return resolveSealedPresetBlock(ctx.env.extra.presetMetadata, key);
+      
+      // 必须加 await 等待 Promise 执行完拿到真实字符串
+      const result = await resolveSealedPresetBlock(ctx.env.extra.presetMetadata, key);
+      
+      console.log("\n========== [RUNTIME PRESET BLOCK DUMP] ==========");
+      console.log(`Block Key: ${key}`);
+      console.log("--- Content Start ---");
+      console.log(result);
+      console.log("--- Content End ---\n");
+      
+      return result;
     },
   });
 }
